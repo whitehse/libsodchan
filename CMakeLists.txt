@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(libsodchan LANGUAGES C VERSION 0.4.0)
+project(libsodchan LANGUAGES C VERSION 0.5.0)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -80,6 +80,10 @@ target_link_libraries(sodchan_mitm_pin_test PRIVATE sodchan)
 target_include_directories(sodchan_mitm_pin_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_test(NAME sodchan_mitm_pin COMMAND sodchan_mitm_pin_test)
+
+add_executable(sodchan_auth_test tests/test_sodchan_auth.c)
+target_link_libraries(sodchan_auth_test PRIVATE sodchan)
+add_test(NAME sodchan_auth COMMAND sodchan_auth_test)
 
 add_executable(sodchan_client_example examples/sodchan_client_example.c)
 target_link_libraries(sodchan_client_example PRIVATE sodchan)

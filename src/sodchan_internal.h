@@ -74,6 +74,16 @@ struct sodchan_ctx {
     int ss_push_ready;
     int ss_pull_ready;
 
+    /* Transcript for AUTH_DEVICE (same bytes as server HELLO sig). */
+    uint8_t t_hello[SODCHAN_T_HELLO_LEN];
+    int     have_t_hello;
+
+    /* AUTH phase (PR-5) */
+    int auth_sent;              /* CLIENT: AUTH_DEVICE queued */
+    int auth_awaiting_decide;   /* SERVER: sig ok, waiting auth_decide */
+    int auth_decided;           /* SERVER: decide already called */
+    int auth_complete;          /* both: session authenticated */
+
     char cfg_store[SODCHAN_CFG_STORE_SIZE];
     size_t cfg_store_used;
     char *allowed_channels;

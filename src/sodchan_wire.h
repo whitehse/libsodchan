@@ -28,7 +28,7 @@ extern "C" {
 
 #define SODCHAN_MAX_CLEAR_FRAME     512u
 #define SODCHAN_MAX_INNER_PDU       (256u * 1024u)
-#define SODCHAN_CLAIMS_MAX          1024u
+/* SODCHAN_CLAIMS_MAX defined in sodchan.h (public) */
 
 #define SODCHAN_HELLO_BODY_LEN      140u
 #define SODCHAN_DOM_SERVER_HELLO    "sodchan-v1-server-hello"
@@ -83,16 +83,24 @@ uint32_t sodchan_wire_get_u32(const uint8_t *p);
 int sodchan_wire_frame_encode(const uint8_t *body, size_t body_len,
                               uint8_t *out, size_t out_cap, size_t *out_len);
 
+/** Length-prefix encode with explicit max body (clear or ciphertext). */
+int sodchan_wire_frame_encode_max(const uint8_t *body, size_t body_len,
+                                  uint32_t max_body,
+                                  uint8_t *out, size_t out_cap, size_t *out_len);
+
 /**
  * Parse one complete frame from buffer.
- * Returns SODCHAN_OK and sets *consumed, *body (pointer into data+4), *body_len.
- * Returns 0 bytes needed semantics via ERR_STATE if truncated (need more data):
- *   SODCHAN_ERR_FULL means incomplete (need more input) — used as "want more".
- * Actually: return SODCHAN_ERR_FULL for incomplete, SODCHAN_ERR_PROTOCOL for bad L.
+ * SODCHAN_ERR_FULL = incomplete (need more input).
+ * SODCHAN_ERR_PROTOCOL = L=0 or L > max for phase.
  */
 int sodchan_wire_frame_parse(const uint8_t *data, size_t len,
                              size_t *consumed,
                              const uint8_t **body, size_t *body_len);
+
+int sodchan_wire_frame_parse_max(const uint8_t *data, size_t len,
+                                 uint32_t max_body,
+                                 size_t *consumed,
+                                 const uint8_t **body, size_t *body_len);
 
 /* --- HELLO body (fixed 140 bytes) --- */
 typedef struct {

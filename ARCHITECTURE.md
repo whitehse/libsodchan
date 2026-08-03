@@ -42,7 +42,7 @@ create → HELLO → SS_HEADER → AUTH → READY → DRAINING → CLOSED
                                       ↘ ERROR
 ```
 
-PR-4 implements through `AUTH` (encrypted channel ready; AUTH PDUs in PR-5).
+PR-5 implements through `READY` after AUTH_DEVICE + host `auth_decide`. Channels in PR-6.
 
 ## Sibling relationship
 

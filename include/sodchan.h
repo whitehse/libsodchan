@@ -26,8 +26,16 @@ extern "C" {
 #endif
 
 #define SODCHAN_VERSION_MAJOR 0
-#define SODCHAN_VERSION_MINOR 4
+#define SODCHAN_VERSION_MINOR 5
 #define SODCHAN_VERSION_PATCH 0
+
+/* Internal AUTH_FAIL reasons (event u.error.code / metrics; wire always UNSPEC). */
+#define SODCHAN_AUTH_REASON_UNSPEC       0
+#define SODCHAN_AUTH_REASON_BAD_SIG      1
+#define SODCHAN_AUTH_REASON_UNKNOWN_KEY  2
+#define SODCHAN_AUTH_REASON_REVOKED      3
+#define SODCHAN_AUTH_REASON_POLICY       4
+#define SODCHAN_AUTH_REASON_PROTOCOL     5
 
 #define SODCHAN_MAX_CHANNELS       16
 #define SODCHAN_PUBKEY_BYTES       32
@@ -42,6 +50,7 @@ extern "C" {
 #define SODCHAN_DEVICE_ID_MAX      128
 /** "SHA256:" + unpadded base64(SHA-256(pk)) + NUL — plenty of room. */
 #define SODCHAN_FP_SHA256_MAX      96
+#define SODCHAN_CLAIMS_MAX         1024
 
 /* Domain separation for session KDF (ADR 014; used from PR-4 handshake). */
 #define SODCHAN_DOM_SS_C2S         "sodchan-ss-c2s-v1"
@@ -211,11 +220,19 @@ int sodchan_next_event(sodchan_ctx_t *ctx, sodchan_event_t *ev);
 sodchan_state_t sodchan_current_state(const sodchan_ctx_t *ctx);
 
 /**
- * SERVER: after AUTH_DEVICE only, once.
- * accept=1 → AUTH_OK; accept=0 → AUTH_FAIL.
+ * SERVER: after SODCHAN_EVENT_AUTH_DEVICE only, once.
+ * accept=1 → encrypted AUTH_OK (empty claims) + AUTHENTICATED + READY.
+ * accept=0 → encrypted AUTH_FAIL (wire UNSPEC) + AUTH_FAILED + ERROR.
  * Second call or wrong state → SODCHAN_ERR_STATE.
  */
 int sodchan_auth_decide(sodchan_ctx_t *ctx, int accept);
+
+/**
+ * SERVER: same as auth_decide, with optional AUTH_OK claims blob (≤1024).
+ * claims may be NULL when claims_len==0.
+ */
+int sodchan_auth_decide_ex(sodchan_ctx_t *ctx, int accept,
+                           const uint8_t *claims, size_t claims_len);
 
 int sodchan_channel_open(sodchan_ctx_t *ctx, const char *name,
                          uint32_t *local_id_out);

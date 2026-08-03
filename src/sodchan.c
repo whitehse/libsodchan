@@ -2,8 +2,8 @@
  * @file sodchan.c
  * @brief libsodchan core — pure state machine (no sockets).
  *
- * PR-4: HELLO exchange, mandatory server id_sig (K16), crypto_kx,
- * secretstream header exchange → AUTH state.
+ * PR-4: HELLO + K16 server id_sig + KX + secretstream headers.
+ * PR-5: AUTH_DEVICE / auth_decide / AUTH_OK|FAIL over secretstream → READY.
  */
 
 #include "sodchan_internal.h"
@@ -226,8 +226,6 @@ static int queue_local_hello(sodchan_ctx_t *ctx)
     memcpy(h.eph_pk, ctx->eph_pk, 32);
 
     if (ctx->role == SODCHAN_ROLE_SERVER) {
-        uint8_t t_hello[SODCHAN_T_HELLO_LEN];
-
         if (!ctx->have_peer_eph) {
             return SODCHAN_ERR_STATE;
         }
@@ -235,10 +233,12 @@ static int queue_local_hello(sodchan_ctx_t *ctx)
         if (sodchan_wire_build_t_hello(SODCHAN_PROTO_VERSION, SODCHAN_SUITE_V1,
                                        ctx->peer_eph_pk, ctx->eph_pk,
                                        ctx->server_id_pk,
-                                       t_hello) != SODCHAN_OK) {
+                                       ctx->t_hello) != SODCHAN_OK) {
             return SODCHAN_ERR_PROTOCOL;
         }
-        if (crypto_sign_detached(h.id_sig, NULL, t_hello, SODCHAN_T_HELLO_LEN,
+        ctx->have_t_hello = 1;
+        if (crypto_sign_detached(h.id_sig, NULL, ctx->t_hello,
+                                 SODCHAN_T_HELLO_LEN,
                                  ctx->server_id_sk) != 0) {
             return SODCHAN_ERR_CRYPTO;
         }
@@ -301,6 +301,300 @@ static void emit_kx_complete(sodchan_ctx_t *ctx)
     (void)sodchan_i_queue_event(ctx, &ev);
 }
 
+static void emit_authenticated(sodchan_ctx_t *ctx)
+{
+    sodchan_event_t ev;
+
+    memset(&ev, 0, sizeof(ev));
+    ev.type = SODCHAN_EVENT_AUTHENTICATED;
+    (void)sodchan_i_queue_event(ctx, &ev);
+}
+
+static void emit_auth_failed(sodchan_ctx_t *ctx, int reason, const char *msg)
+{
+    sodchan_event_t ev;
+
+    memset(&ev, 0, sizeof(ev));
+    ev.type = SODCHAN_EVENT_AUTH_FAILED;
+    ev.u.error.code = reason;
+    if (msg) {
+        snprintf(ev.u.error.message, sizeof(ev.u.error.message), "%s", msg);
+    }
+    (void)sodchan_i_queue_event(ctx, &ev);
+}
+
+/** Max ciphertext body on wire (plaintext record + secretstream ABYTES). */
+static uint32_t ss_frame_max_body(const sodchan_ctx_t *ctx)
+{
+    size_t m = ctx->max_record_size + crypto_secretstream_xchacha20poly1305_ABYTES;
+    if (m > 0xFFFFFFFFu) {
+        m = 0xFFFFFFFFu;
+    }
+    /* Keep within input buffer for a single frame */
+    if (m + 4 > SODCHAN_IN_BUF_SIZE) {
+        m = SODCHAN_IN_BUF_SIZE - 4;
+    }
+    return (uint32_t)m;
+}
+
+static int ss_send_pdu(sodchan_ctx_t *ctx, const uint8_t *plain, size_t plain_len)
+{
+    /* AUTH PDUs are small; stack buffer sized for typical + margin. */
+    uint8_t ct[2048];
+    unsigned long long clen = 0;
+    uint8_t frame[4 + 2048];
+    size_t flen = 0;
+    int rc;
+
+    if (!ctx->ss_push_ready || !plain || plain_len == 0) {
+        return SODCHAN_ERR_STATE;
+    }
+    if (plain_len + crypto_secretstream_xchacha20poly1305_ABYTES > sizeof(ct)) {
+        return SODCHAN_ERR_FULL;
+    }
+    if (crypto_secretstream_xchacha20poly1305_push(
+            &ctx->ss_push, ct, &clen, plain, plain_len, NULL, 0,
+            crypto_secretstream_xchacha20poly1305_TAG_MESSAGE) != 0) {
+        return SODCHAN_ERR_CRYPTO;
+    }
+    rc = sodchan_wire_frame_encode_max(ct, (size_t)clen, ss_frame_max_body(ctx),
+                                       frame, sizeof(frame), &flen);
+    if (rc != SODCHAN_OK) {
+        return rc;
+    }
+    return out_append(ctx, frame, flen);
+}
+
+static int client_send_auth_device(sodchan_ctx_t *ctx)
+{
+    uint8_t t_auth[512];
+    size_t t_auth_len = 0;
+    uint8_t sig[64];
+    uint8_t pdu[512];
+    size_t pdu_len = 0;
+    const char *user;
+    const char *dev;
+    size_t ulen, dlen;
+
+    if (ctx->role != SODCHAN_ROLE_CLIENT || ctx->auth_sent) {
+        return SODCHAN_OK;
+    }
+    if (!ctx->have_client_id_sk || !ctx->have_client_id_pk || !ctx->have_t_hello) {
+        return SODCHAN_OK; /* host may not have device key yet */
+    }
+
+    user = ctx->client_username ? ctx->client_username : "";
+    dev = ctx->client_device_id ? ctx->client_device_id : "";
+    ulen = strlen(user);
+    dlen = strlen(dev);
+    if (ulen > SODCHAN_USER_MAX) {
+        ulen = SODCHAN_USER_MAX;
+    }
+    if (dlen > SODCHAN_DEVICE_ID_MAX) {
+        dlen = SODCHAN_DEVICE_ID_MAX;
+    }
+
+    if (sodchan_wire_build_t_auth(ctx->t_hello, ctx->client_id_pk, user, ulen,
+                                  dev, dlen, t_auth, sizeof(t_auth),
+                                  &t_auth_len) != SODCHAN_OK) {
+        return SODCHAN_ERR_PROTOCOL;
+    }
+    if (crypto_sign_detached(sig, NULL, t_auth, t_auth_len,
+                             ctx->client_id_sk) != 0) {
+        return SODCHAN_ERR_CRYPTO;
+    }
+    if (sodchan_wire_auth_device_encode(ctx->client_id_pk, sig, user, ulen, dev,
+                                        dlen, pdu, sizeof(pdu),
+                                        &pdu_len) != SODCHAN_OK) {
+        return SODCHAN_ERR_PROTOCOL;
+    }
+    if (ss_send_pdu(ctx, pdu, pdu_len) != SODCHAN_OK) {
+        return SODCHAN_ERR_FULL;
+    }
+    ctx->auth_sent = 1;
+    return SODCHAN_OK;
+}
+
+static int server_send_auth_fail(sodchan_ctx_t *ctx)
+{
+    uint8_t pdu[8];
+    size_t plen = 0;
+
+    if (sodchan_wire_auth_fail_encode(pdu, sizeof(pdu), &plen) != SODCHAN_OK) {
+        return SODCHAN_ERR_PROTOCOL;
+    }
+    return ss_send_pdu(ctx, pdu, plen);
+}
+
+static int server_send_auth_ok(sodchan_ctx_t *ctx, const uint8_t *claims,
+                               size_t claims_len)
+{
+    uint8_t pdu[3 + SODCHAN_CLAIMS_MAX];
+    size_t plen = 0;
+
+    if (sodchan_wire_auth_ok_encode(claims, claims_len, pdu, sizeof(pdu),
+                                    &plen) != SODCHAN_OK) {
+        return SODCHAN_ERR_PARAM;
+    }
+    return ss_send_pdu(ctx, pdu, plen);
+}
+
+static int handle_auth_device_pdu(sodchan_ctx_t *ctx, const uint8_t *plain,
+                                  size_t plain_len)
+{
+    uint8_t client_pk[32], sig[64];
+    char user[SODCHAN_USER_MAX + 1];
+    char device[SODCHAN_DEVICE_ID_MAX + 1];
+    size_t ulen = 0, dlen = 0;
+    uint8_t t_auth[512];
+    size_t t_auth_len = 0;
+    sodchan_event_t ev;
+
+    if (ctx->role != SODCHAN_ROLE_SERVER) {
+        sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "AUTH_DEVICE to client");
+        return -1;
+    }
+    if (ctx->auth_awaiting_decide || ctx->auth_complete || ctx->auth_decided) {
+        sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "duplicate AUTH_DEVICE");
+        return -1;
+    }
+    if (!ctx->have_t_hello) {
+        sodchan_i_set_error(ctx, SODCHAN_ERR_STATE, "missing t_hello");
+        return -1;
+    }
+
+    if (sodchan_wire_auth_device_decode(plain, plain_len, client_pk, sig, user,
+                                        sizeof(user), &ulen, device,
+                                        sizeof(device), &dlen) != SODCHAN_OK) {
+        sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "AUTH_DEVICE decode");
+        return -1;
+    }
+
+    if (sodchan_wire_build_t_auth(ctx->t_hello, client_pk, user, ulen, device,
+                                  dlen, t_auth, sizeof(t_auth),
+                                  &t_auth_len) != SODCHAN_OK) {
+        sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "t_auth build");
+        return -1;
+    }
+
+    if (crypto_sign_verify_detached(sig, t_auth, t_auth_len, client_pk) != 0) {
+        /* Bad sig: AUTH_FAIL on wire, local AUTH_FAILED, no auth_decide */
+        (void)server_send_auth_fail(ctx);
+        emit_auth_failed(ctx, SODCHAN_AUTH_REASON_BAD_SIG, "bad device sig");
+        sodchan_i_set_error(ctx, SODCHAN_ERR_CRYPTO, "AUTH_DEVICE bad signature");
+        return -1;
+    }
+
+    memcpy(ctx->peer_id_pk, client_pk, 32);
+    ctx->have_peer_id = 1;
+
+    memset(&ev, 0, sizeof(ev));
+    ev.type = SODCHAN_EVENT_AUTH_DEVICE;
+    memcpy(ev.u.auth.peer_id_pk, client_pk, 32);
+    snprintf(ev.u.auth.username, sizeof(ev.u.auth.username), "%s", user);
+    snprintf(ev.u.auth.device_id, sizeof(ev.u.auth.device_id), "%s", device);
+    ev.u.auth.sig_ok = 1;
+    (void)sodchan_pubkey_fingerprint_sha256(client_pk, ev.u.auth.fingerprint_sha256,
+                                            sizeof(ev.u.auth.fingerprint_sha256));
+    (void)sodchan_i_queue_event(ctx, &ev);
+
+    ctx->auth_awaiting_decide = 1;
+    return 0;
+}
+
+static int handle_auth_ok_pdu(sodchan_ctx_t *ctx, const uint8_t *plain,
+                              size_t plain_len)
+{
+    const uint8_t *claims = NULL;
+    size_t claims_len = 0;
+
+    if (ctx->role != SODCHAN_ROLE_CLIENT) {
+        sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "AUTH_OK to server");
+        return -1;
+    }
+    if (sodchan_wire_auth_ok_decode(plain, plain_len, &claims, &claims_len) !=
+        SODCHAN_OK) {
+        sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "AUTH_OK decode");
+        return -1;
+    }
+    (void)claims;
+    (void)claims_len;
+    ctx->auth_complete = 1;
+    ctx->state = SODCHAN_STATE_READY;
+    emit_authenticated(ctx);
+    return 0;
+}
+
+static int handle_auth_fail_pdu(sodchan_ctx_t *ctx, const uint8_t *plain,
+                                size_t plain_len)
+{
+    uint8_t reason = 0, msg_len = 0;
+
+    if (sodchan_wire_auth_fail_decode(plain, plain_len, &reason, &msg_len) !=
+        SODCHAN_OK) {
+        sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "AUTH_FAIL decode");
+        return -1;
+    }
+    (void)reason; /* wire is always UNSPEC */
+    (void)msg_len;
+    emit_auth_failed(ctx, SODCHAN_AUTH_REASON_UNSPEC, "AUTH_FAIL received");
+    sodchan_i_set_error(ctx, SODCHAN_ERR_REJECTED, "authentication failed");
+    return -1;
+}
+
+static int handle_encrypted_pdu(sodchan_ctx_t *ctx, const uint8_t *ct, size_t ct_len)
+{
+    uint8_t plain[2048];
+    unsigned long long plen = 0;
+    unsigned char tag = 0;
+    uint8_t ptype = 0;
+
+    if (!ctx->ss_pull_ready) {
+        sodchan_i_set_error(ctx, SODCHAN_ERR_STATE, "ss pull not ready");
+        return -1;
+    }
+    if (ct_len < crypto_secretstream_xchacha20poly1305_ABYTES ||
+        ct_len - crypto_secretstream_xchacha20poly1305_ABYTES > sizeof(plain)) {
+        sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "ss ciphertext size");
+        return -1;
+    }
+    if (crypto_secretstream_xchacha20poly1305_pull(
+            &ctx->ss_pull, plain, &plen, &tag, ct, ct_len, NULL, 0) != 0) {
+        sodchan_i_set_error(ctx, SODCHAN_ERR_CRYPTO, "ss decrypt failed");
+        return -1;
+    }
+    if (tag == crypto_secretstream_xchacha20poly1305_TAG_FINAL) {
+        sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "unexpected TAG_FINAL");
+        return -1;
+    }
+    if (plen == 0) {
+        return 0; /* rekey empty etc. */
+    }
+    if (sodchan_wire_pdu_type(plain, (size_t)plen, &ptype) != SODCHAN_OK) {
+        sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "empty pdu");
+        return -1;
+    }
+
+    if (ctx->state == SODCHAN_STATE_AUTH) {
+        switch (ptype) {
+        case SODCHAN_PDU_AUTH_DEVICE:
+            return handle_auth_device_pdu(ctx, plain, (size_t)plen);
+        case SODCHAN_PDU_AUTH_OK:
+            return handle_auth_ok_pdu(ctx, plain, (size_t)plen);
+        case SODCHAN_PDU_AUTH_FAIL:
+            return handle_auth_fail_pdu(ctx, plain, (size_t)plen);
+        default:
+            sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL,
+                                "unexpected pdu in AUTH");
+            return -1;
+        }
+    }
+
+    /* READY mux: PR-6 */
+    sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "mux not implemented");
+    return -1;
+}
+
 static int handle_peer_hello(sodchan_ctx_t *ctx, const uint8_t *body, size_t len)
 {
     sodchan_hello_t h;
@@ -348,6 +642,8 @@ static int handle_peer_hello(sodchan_ctx_t *ctx, const uint8_t *body, size_t len
             sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "t_hello build");
             return -1;
         }
+        memcpy(ctx->t_hello, t_hello, SODCHAN_T_HELLO_LEN);
+        ctx->have_t_hello = 1;
 
         /* K16: verify server signature before any KX trust */
         if (crypto_sign_verify_detached(h.id_sig, t_hello, SODCHAN_T_HELLO_LEN,
@@ -423,6 +719,10 @@ static int handle_peer_ss_header(sodchan_ctx_t *ctx, const uint8_t *body,
         ctx->hs = SODCHAN_HS_DONE;
         ctx->state = SODCHAN_STATE_AUTH;
         emit_kx_complete(ctx);
+        if (client_send_auth_device(ctx) != SODCHAN_OK) {
+            sodchan_i_set_error(ctx, SODCHAN_ERR_CRYPTO, "AUTH_DEVICE send");
+            return -1;
+        }
         return 0;
     }
 
@@ -448,19 +748,30 @@ static int handle_peer_ss_header(sodchan_ctx_t *ctx, const uint8_t *body,
 static void process_input(sodchan_ctx_t *ctx)
 {
     while (ctx->state != SODCHAN_STATE_ERROR &&
-           ctx->state != SODCHAN_STATE_CLOSED &&
-           ctx->state != SODCHAN_STATE_READY) {
+           ctx->state != SODCHAN_STATE_CLOSED) {
         size_t consumed = 0;
         const uint8_t *body = NULL;
         size_t body_len = 0;
         int rc;
+        int encrypted = (ctx->hs == SODCHAN_HS_DONE);
+
+        /* Mux channel data in READY is PR-6. */
+        if (ctx->state == SODCHAN_STATE_READY) {
+            return;
+        }
 
         if (ctx->in_len < 4) {
             return;
         }
 
-        rc = sodchan_wire_frame_parse(ctx->in_buf, ctx->in_len, &consumed, &body,
-                                      &body_len);
+        if (encrypted) {
+            rc = sodchan_wire_frame_parse_max(ctx->in_buf, ctx->in_len,
+                                              ss_frame_max_body(ctx), &consumed,
+                                              &body, &body_len);
+        } else {
+            rc = sodchan_wire_frame_parse(ctx->in_buf, ctx->in_len, &consumed,
+                                          &body, &body_len);
+        }
         if (rc == SODCHAN_ERR_FULL) {
             return; /* need more */
         }
@@ -478,10 +789,9 @@ static void process_input(sodchan_ctx_t *ctx)
                 return;
             }
         } else if (ctx->hs == SODCHAN_HS_DONE) {
-            /* Encrypted PDUs: PR-5. Drop/error on unexpected clear frames. */
-            sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL,
-                                "unexpected clear frame in AUTH");
-            return;
+            if (handle_encrypted_pdu(ctx, body, body_len) != 0) {
+                return;
+            }
         } else {
             sodchan_i_set_error(ctx, SODCHAN_ERR_STATE, "bad hs state");
             return;
@@ -490,8 +800,9 @@ static void process_input(sodchan_ctx_t *ctx)
         memmove(ctx->in_buf, ctx->in_buf + consumed, ctx->in_len - consumed);
         ctx->in_len -= consumed;
 
-        if (ctx->hs == SODCHAN_HS_DONE) {
-            return; /* stop; AUTH decrypt path later */
+        /* READY: stop processing until PR-6 mux handlers exist */
+        if (ctx->state == SODCHAN_STATE_READY && ctx->in_len == 0) {
+            return;
         }
     }
 }
@@ -602,8 +913,13 @@ void sodchan_reset(sodchan_ctx_t *ctx)
     sodium_memzero(ctx->ss_key_s2c, sizeof(ctx->ss_key_s2c));
     ctx->have_peer_eph = 0;
     ctx->have_peer_id = 0;
+    ctx->have_t_hello = 0;
     ctx->ss_push_ready = 0;
     ctx->ss_pull_ready = 0;
+    ctx->auth_sent = 0;
+    ctx->auth_awaiting_decide = 0;
+    ctx->auth_decided = 0;
+    ctx->auth_complete = 0;
     ctx->error = 0;
     ctx->error_msg[0] = '\0';
     ctx->event_head = 0;
@@ -686,13 +1002,54 @@ sodchan_state_t sodchan_current_state(const sodchan_ctx_t *ctx)
     return ctx->state;
 }
 
-int sodchan_auth_decide(sodchan_ctx_t *ctx, int accept)
+int sodchan_auth_decide_ex(sodchan_ctx_t *ctx, int accept,
+                           const uint8_t *claims, size_t claims_len)
 {
-    (void)accept;
     if (!ctx) {
         return SODCHAN_ERR_PARAM;
     }
-    return SODCHAN_ERR_STATE; /* PR-5 */
+    if (ctx->role != SODCHAN_ROLE_SERVER) {
+        return SODCHAN_ERR_STATE;
+    }
+    if (!ctx->auth_awaiting_decide || ctx->auth_decided) {
+        return SODCHAN_ERR_STATE;
+    }
+    if (ctx->state != SODCHAN_STATE_AUTH) {
+        return SODCHAN_ERR_STATE;
+    }
+    if (claims_len > 0 && !claims) {
+        return SODCHAN_ERR_PARAM;
+    }
+    if (claims_len > SODCHAN_CLAIMS_MAX) {
+        return SODCHAN_ERR_PARAM;
+    }
+
+    ctx->auth_awaiting_decide = 0;
+    ctx->auth_decided = 1;
+
+    if (accept) {
+        if (server_send_auth_ok(ctx, claims, claims_len) != SODCHAN_OK) {
+            sodchan_i_set_error(ctx, SODCHAN_ERR_FULL, "AUTH_OK send");
+            return SODCHAN_ERR_FULL;
+        }
+        ctx->auth_complete = 1;
+        ctx->state = SODCHAN_STATE_READY;
+        emit_authenticated(ctx);
+        return SODCHAN_OK;
+    }
+
+    if (server_send_auth_fail(ctx) != SODCHAN_OK) {
+        sodchan_i_set_error(ctx, SODCHAN_ERR_FULL, "AUTH_FAIL send");
+        return SODCHAN_ERR_FULL;
+    }
+    emit_auth_failed(ctx, SODCHAN_AUTH_REASON_POLICY, "auth_decide reject");
+    sodchan_i_set_error(ctx, SODCHAN_ERR_REJECTED, "authentication rejected");
+    return SODCHAN_OK;
+}
+
+int sodchan_auth_decide(sodchan_ctx_t *ctx, int accept)
+{
+    return sodchan_auth_decide_ex(ctx, accept, NULL, 0);
 }
 
 int sodchan_channel_open(sodchan_ctx_t *ctx, const char *name,

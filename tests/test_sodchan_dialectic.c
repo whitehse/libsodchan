@@ -1,6 +1,6 @@
 /**
  * @file test_sodchan_dialectic.c
- * @brief PR-4: client↔server buffer pump through HELLO + KX + SS headers → AUTH.
+ * @brief Client↔server pump: HELLO → KX → AUTH → READY.
  */
 
 #include "sodchan.h"
@@ -30,23 +30,6 @@ static int pump_once(sodchan_ctx_t *a, sodchan_ctx_t *b)
     return moved;
 }
 
-static void drain_events(sodchan_ctx_t *ctx, int *saw_hello, int *saw_kx)
-{
-    sodchan_event_t ev;
-
-    while (sodchan_next_event(ctx, &ev)) {
-        if (ev.type == SODCHAN_EVENT_HELLO_RECEIVED) {
-            *saw_hello = 1;
-        } else if (ev.type == SODCHAN_EVENT_KX_COMPLETE) {
-            *saw_kx = 1;
-        } else if (ev.type == SODCHAN_EVENT_ERROR) {
-            fprintf(stderr, "unexpected ERROR: %s (%d)\n", ev.u.error.message,
-                    ev.u.error.code);
-            assert(0);
-        }
-    }
-}
-
 int main(void)
 {
     uint8_t server_pk[SODCHAN_PUBKEY_BYTES];
@@ -56,9 +39,10 @@ int main(void)
     sodchan_config_t scfg, ccfg;
     sodchan_ctx_t *s, *c;
     int i;
-    int s_hello = 0, s_kx = 0, c_hello = 0, c_kx = 0;
+    int s_hello = 0, s_kx = 0, s_auth_dev = 0, s_authed = 0;
+    int c_hello = 0, c_kx = 0, c_authed = 0;
 
-    printf("libsodchan dialectic test (PR-4 handshake)...\n");
+    printf("libsodchan dialectic test (handshake + auth)...\n");
 
     assert(sodchan_keygen_device(server_pk, server_sk) == SODCHAN_OK);
     assert(sodchan_keygen_device(client_pk, client_sk) == SODCHAN_OK);
@@ -68,35 +52,65 @@ int main(void)
     scfg.server_id_sk = server_sk;
 
     memset(&ccfg, 0, sizeof(ccfg));
-    ccfg.server_id_pk = server_pk; /* pin */
+    ccfg.server_id_pk = server_pk;
     ccfg.client_id_pk = client_pk;
     ccfg.client_id_sk = client_sk;
+    ccfg.client_username = "lab";
+    ccfg.client_device_id = "dialectic";
 
     s = sodchan_create(SODCHAN_ROLE_SERVER, &scfg);
     c = sodchan_create(SODCHAN_ROLE_CLIENT, &ccfg);
     assert(s && c);
-    assert(sodchan_current_state(s) == SODCHAN_STATE_HELLO);
-    assert(sodchan_current_state(c) == SODCHAN_STATE_HELLO);
 
-    for (i = 0; i < 32; i++) {
-        if (!pump_once(c, s) && !pump_once(s, c)) {
-            /* allow one more drain of residual */
+    for (i = 0; i < 64; i++) {
+        pump_once(c, s);
+        pump_once(s, c);
+        {
+            sodchan_event_t ev;
+            while (sodchan_next_event(s, &ev)) {
+                if (ev.type == SODCHAN_EVENT_HELLO_RECEIVED) {
+                    s_hello = 1;
+                } else if (ev.type == SODCHAN_EVENT_KX_COMPLETE) {
+                    s_kx = 1;
+                } else if (ev.type == SODCHAN_EVENT_AUTH_DEVICE) {
+                    s_auth_dev = 1;
+                    assert(ev.u.auth.sig_ok == 1);
+                    assert(sodchan_auth_decide(s, 1) == SODCHAN_OK);
+                } else if (ev.type == SODCHAN_EVENT_AUTHENTICATED) {
+                    s_authed = 1;
+                } else if (ev.type == SODCHAN_EVENT_ERROR) {
+                    fprintf(stderr, "server ERROR: %s\n", ev.u.error.message);
+                    assert(0);
+                }
+            }
+            while (sodchan_next_event(c, &ev)) {
+                if (ev.type == SODCHAN_EVENT_HELLO_RECEIVED) {
+                    c_hello = 1;
+                } else if (ev.type == SODCHAN_EVENT_KX_COMPLETE) {
+                    c_kx = 1;
+                } else if (ev.type == SODCHAN_EVENT_AUTHENTICATED) {
+                    c_authed = 1;
+                } else if (ev.type == SODCHAN_EVENT_ERROR) {
+                    fprintf(stderr, "client ERROR: %s\n", ev.u.error.message);
+                    assert(0);
+                }
+            }
         }
-        drain_events(s, &s_hello, &s_kx);
-        drain_events(c, &c_hello, &c_kx);
-        if (sodchan_current_state(s) == SODCHAN_STATE_AUTH &&
-            sodchan_current_state(c) == SODCHAN_STATE_AUTH && s_kx && c_kx) {
+        if (sodchan_current_state(s) == SODCHAN_STATE_READY &&
+            sodchan_current_state(c) == SODCHAN_STATE_READY && s_authed &&
+            c_authed) {
             break;
         }
     }
 
-    assert(sodchan_current_state(s) == SODCHAN_STATE_AUTH);
-    assert(sodchan_current_state(c) == SODCHAN_STATE_AUTH);
     assert(s_hello && c_hello);
     assert(s_kx && c_kx);
+    assert(s_auth_dev);
+    assert(s_authed && c_authed);
+    assert(sodchan_current_state(s) == SODCHAN_STATE_READY);
+    assert(sodchan_current_state(c) == SODCHAN_STATE_READY);
 
-    printf("  PASS: dialectic reaches AUTH (HELLO + KX + secretstream headers)\n");
-
+    printf("  PASS: dialectic reaches READY (full auth)\n");
     sodchan_destroy(s);
     sodchan_destroy(c);
     printf("libsodchan dialectic test PASSED.\n");

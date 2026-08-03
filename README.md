@@ -37,7 +37,7 @@ See `AGENTS.md` and `docs/libsodchan-design.md` (workspace design doc).
 
 ## Status
 
-**v0.4 (PR-4 handshake)** — HELLO + mandatory server identity proof + X25519 KX + secretstream headers through `AUTH` state. Device auth PDUs in PR-5+.
+**v0.5 (PR-5 auth)** — Full handshake + device pubkey AUTH_DEVICE / auth_decide → READY. Multiplexed channels in PR-6+.
 
 ## License
 

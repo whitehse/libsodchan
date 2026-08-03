@@ -32,13 +32,14 @@ uint32_t sodchan_wire_get_u32(const uint8_t *p)
            ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
-int sodchan_wire_frame_encode(const uint8_t *body, size_t body_len,
-                              uint8_t *out, size_t out_cap, size_t *out_len)
+int sodchan_wire_frame_encode_max(const uint8_t *body, size_t body_len,
+                                  uint32_t max_body,
+                                  uint8_t *out, size_t out_cap, size_t *out_len)
 {
     if (!body || !out || !out_len || body_len == 0) {
         return SODCHAN_ERR_PARAM;
     }
-    if (body_len > SODCHAN_MAX_CLEAR_FRAME) {
+    if (body_len > max_body) {
         return SODCHAN_ERR_PROTOCOL;
     }
     if (out_cap < 4 + body_len) {
@@ -50,9 +51,17 @@ int sodchan_wire_frame_encode(const uint8_t *body, size_t body_len,
     return SODCHAN_OK;
 }
 
-int sodchan_wire_frame_parse(const uint8_t *data, size_t len,
-                             size_t *consumed,
-                             const uint8_t **body, size_t *body_len)
+int sodchan_wire_frame_encode(const uint8_t *body, size_t body_len,
+                              uint8_t *out, size_t out_cap, size_t *out_len)
+{
+    return sodchan_wire_frame_encode_max(body, body_len, SODCHAN_MAX_CLEAR_FRAME,
+                                         out, out_cap, out_len);
+}
+
+int sodchan_wire_frame_parse_max(const uint8_t *data, size_t len,
+                                 uint32_t max_body,
+                                 size_t *consumed,
+                                 const uint8_t **body, size_t *body_len)
 {
     uint32_t L;
 
@@ -63,7 +72,7 @@ int sodchan_wire_frame_parse(const uint8_t *data, size_t len,
         return SODCHAN_ERR_FULL; /* need more */
     }
     L = sodchan_wire_get_u32(data);
-    if (L == 0 || L > SODCHAN_MAX_CLEAR_FRAME) {
+    if (L == 0 || L > max_body) {
         return SODCHAN_ERR_PROTOCOL;
     }
     if (len < 4 + (size_t)L) {
@@ -73,6 +82,14 @@ int sodchan_wire_frame_parse(const uint8_t *data, size_t len,
     *body_len = L;
     *consumed = 4 + (size_t)L;
     return SODCHAN_OK;
+}
+
+int sodchan_wire_frame_parse(const uint8_t *data, size_t len,
+                             size_t *consumed,
+                             const uint8_t **body, size_t *body_len)
+{
+    return sodchan_wire_frame_parse_max(data, len, SODCHAN_MAX_CLEAR_FRAME,
+                                        consumed, body, body_len);
 }
 
 int sodchan_wire_hello_encode(const sodchan_hello_t *h,

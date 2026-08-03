@@ -29,18 +29,17 @@
 - No new syscalls/callbacks.
 - Dialectic tests cover READY → channel data when implemented.
 
-**Current status (v0.4 / PR-4 handshake)**:
-- Public API in `include/sodchan.h` (design-aligned).
-- `sodchan_create` starts HELLO; client queues HELLO, server waits.
-- **K16:** server Ed25519-signs `T_hello` (both ephemerals); client pin-checks then verifies before KX.
-- **crypto_kx** + labeled secretstream keys; SS header exchange → `SODCHAN_STATE_AUTH`.
-- Events: `HELLO_RECEIVED`, `KX_COMPLETE` (AUTH PDUs in PR-5).
-- Wire ADR 017 + golden vectors; crypto helpers PR-2.
-- Tests: smoke, crypto, wire, **dialectic**, **mitm_pin**.
+**Current status (v0.5 / PR-5 auth)**:
+- Handshake through secretstream (PR-4) + **device auth** (PR-5).
+- Client auto-sends encrypted `AUTH_DEVICE` when `client_id_sk` set.
+- Server verifies sig → `AUTH_DEVICE` event → `auth_decide` / `auth_decide_ex`.
+- AUTH_OK → READY; AUTH_FAIL (wire UNSPEC) → ERROR; bad sig never calls decide.
+- Events: HELLO_RECEIVED, KX_COMPLETE, AUTH_DEVICE, AUTHENTICATED, AUTH_FAILED.
+- Tests: smoke, crypto, wire, dialectic (→READY), mitm_pin, **auth**.
 
 **Next PRs** (see design PR plan):
-- PR-5: AUTH_DEVICE + auth_decide + AUTH_OK/FAIL
-- PR-6+: channels, host/agent/mobile
+- PR-6: multiplexed channels + flow control
+- PR-7+: fuzz, host/agent/mobile
 
 **Dependencies**:
 - **libsodium** (required). Install `libsodium-dev` or set `SODIUM_ROOT` / extract headers under `third_party/sodium-prefix/usr`.
