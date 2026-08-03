@@ -15,7 +15,7 @@
 - docs/README.md — documentation index
 - docs/DOMAIN.md — domain glossary (channels, enroll, pin)
 - docs/decisions/ — ADRs (common sibling decisions + sodchan-specific)
-- Design doc: `~/docs/libsodchan-design.md` (full protocol + PR plan)
+- Design doc: `docs/libsodchan-design.md` (full protocol + PR plan)
 
 **Operating rules**:
 - Never introduce system calls, callbacks, or hidden I/O in the core library.

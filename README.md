@@ -33,7 +33,7 @@ sodchan_ctx_t *s = sodchan_create(SODCHAN_ROLE_SERVER, &cfg);
 sodchan_destroy(s);
 ```
 
-See `AGENTS.md` and `docs/libsodchan-design.md` (workspace design doc).
+See `AGENTS.md` and [docs/libsodchan-design.md](docs/libsodchan-design.md).
 
 ## Status
 

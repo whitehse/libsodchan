@@ -6,7 +6,7 @@
 | [../ARCHITECTURE.md](../ARCHITECTURE.md) | Module map, invariants, ports |
 | [DOMAIN.md](DOMAIN.md) | Glossary (channels, enroll, pin) |
 | [decisions/](decisions/) | Architecture Decision Records |
-| `~/docs/libsodchan-design.md` | Full design (wire, enroll, PR plan) |
+| [libsodchan-design.md](libsodchan-design.md) | Full design (wire, enroll, PR plan, size table) |
 
 ## ADR index
 
