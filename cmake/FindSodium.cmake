@@ -35,11 +35,21 @@ if(PkgConfig_FOUND AND NOT Sodium_FOUND)
     pkg_check_modules(PC_SODIUM QUIET libsodium)
 endif()
 
+# When SODIUM_ROOT points at a host-side cross prefix (e.g. armv7 musl
+# static install under third_party/), CMAKE_FIND_ROOT_PATH_MODE_*=ONLY
+# would otherwise only search the toolchain sysroot. Prefer the explicit
+# prefix with NO_CMAKE_FIND_ROOT_PATH.
+set(_sodium_find_extra "")
+if(_sodium_root_hints)
+    set(_sodium_find_extra NO_CMAKE_FIND_ROOT_PATH)
+endif()
+
 find_path(Sodium_INCLUDE_DIR
     NAMES sodium.h
     HINTS ${_sodium_root_hints}
           ${PC_SODIUM_INCLUDE_DIRS}
     PATH_SUFFIXES include
+    ${_sodium_find_extra}
 )
 
 find_library(Sodium_LIBRARY
@@ -51,6 +61,8 @@ find_library(Sodium_LIBRARY
         lib64
         lib/x86_64-linux-gnu
         lib/aarch64-linux-gnu
+        lib/arm-linux-gnueabihf
+    ${_sodium_find_extra}
 )
 
 # Runtime-only systems often lack libsodium.so (unversioned); try soname.
@@ -66,7 +78,8 @@ if(NOT Sodium_LIBRARY)
     find_library(Sodium_LIBRARY
         NAMES libsodium.a
         HINTS ${_sodium_root_hints}
-        PATH_SUFFIXES lib lib/x86_64-linux-gnu lib64
+        PATH_SUFFIXES lib lib/x86_64-linux-gnu lib/aarch64-linux-gnu lib64
+        ${_sodium_find_extra}
     )
 endif()
 

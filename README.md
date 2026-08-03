@@ -18,6 +18,19 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+### Field cross (ipq807x_32 armv7 musl)
+
+Do **not** link host `build/libsodchan.a` (x86_64) into an ARM `cpe_agent` —
+ld will fail with `error adding symbols: file format not recognized`.
+
+```bash
+# Builds third_party/sodium-armv7-prefix + build-ipq807x_32/libsodchan.a
+./scripts/cross_build_ipq807x_32.sh
+
+# Then netforensics field agent (picks arch-specific archives automatically):
+cd ../netforensics && ./scripts/cross_build_ipq807x.sh --32
+```
+
 ## Quick API
 
 ```c
