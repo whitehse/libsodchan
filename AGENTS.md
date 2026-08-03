@@ -29,17 +29,18 @@
 - No new syscalls/callbacks.
 - Dialectic tests cover READY → channel data when implemented.
 
-**Current status (v0.2 / PR-2 crypto)**:
+**Current status (v0.3 / PR-3 wire)**:
 - Public API in `include/sodchan.h` (design-aligned).
 - `sodchan_create` / `destroy` / `reset` with pin + lab_mode gates; `sodium_init` on create.
-- **libsodium** linked: `keygen_device`, `keygen_from_seed`, SCSK seed encode/decode, SHA256 fingerprints.
-- Labeled secretstream KDF helper (`sodchan_crypto_ss_key_derive`) for PR-4.
-- Plumbing stubs: feed/get/next_event/channel/auth return empty or `SODCHAN_ERR_STATE`.
-- Tests: smoke + crypto (keygen, SCSK, fingerprint, KDF domain separation).
+- **libsodium** linked: keygen, SCSK seeds, SHA256 fingerprints, labeled SS KDF.
+- **Wire (ADR 017):** `sodchan_wire_*` encode/decode for HELLO, AUTH, mux, transcripts;
+  golden vectors in `tests/vectors/handshake_v1.hex`.
+- Plumbing stubs: feed/get/next_event/channel/auth return empty or `SODCHAN_ERR_STATE` until PR-4.
+- Tests: smoke + crypto + wire.
 
 **Next PRs** (see design PR plan):
-- PR-3: wire ADR 017 + hex vectors
-- PR-4+: handshake, auth, channels, host/agent/mobile
+- PR-4: HELLO + mandatory server sig + KX + secretstream (+ MITM test)
+- PR-5+: AUTH, channels, host/agent/mobile
 
 **Dependencies**:
 - **libsodium** (required). Install `libsodium-dev` or set `SODIUM_ROOT` / extract headers under `third_party/sodium-prefix/usr`.

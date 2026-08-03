@@ -26,7 +26,7 @@ extern "C" {
 #endif
 
 #define SODCHAN_VERSION_MAJOR 0
-#define SODCHAN_VERSION_MINOR 2
+#define SODCHAN_VERSION_MINOR 3
 #define SODCHAN_VERSION_PATCH 0
 
 #define SODCHAN_MAX_CHANNELS       16

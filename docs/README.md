@@ -19,5 +19,6 @@
 | 006 | Core library as plumbing |
 | 009 | Consistent protocol interfaces |
 | 014 | Fixed libsodium crypto suite |
+| 017 | Normative wire format (suite V1) + vectors |
 
-Sodchan-specific ADRs 015–017 land with later PRs (channels, identity, wire format).
+ADRs 015–016 (channels, identity session auth) land with later PRs.

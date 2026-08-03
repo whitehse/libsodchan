@@ -37,7 +37,7 @@ See `AGENTS.md` and `docs/libsodchan-design.md` (workspace design doc).
 
 ## Status
 
-**v0.2 (PR-2 crypto)** — API surface, create/destroy policy, Ed25519 keygen, SCSK seed blobs, SHA256 fingerprints, ADR 014 suite. Wire/handshake in PR-3+.
+**v0.3 (PR-3 wire)** — Crypto helpers + normative wire encode/decode (ADR 017) with golden hex vectors. Handshake state machine in PR-4+.
 
 ## License
 
