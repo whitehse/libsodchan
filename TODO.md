@@ -14,7 +14,12 @@ Major progress tracking (ADR 013 lineage from siblings).
 
 ## In progress / next
 
-- [ ] PR-8+: edgehost / cpe_agent / mobile (see design PR plan)
+- [x] PR-8: edgehost device store + session index (`edge_sodchan_devices`)
+- [x] PR-9: edgehost raw :4336 + telemetry demux (`edge_sodchan_callhome`)
+- [ ] PR-9b: TLS :4337
+- [ ] PR-10: full demux (ai/control/pg/usp)
+- [ ] PR-11: device-enroll HTTP + revoke
+- [ ] PR-12: cpe_agent sodchan client
 
 ## Open ops (not library)
 
