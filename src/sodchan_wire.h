@@ -205,6 +205,18 @@ int sodchan_wire_channel_open_confirm_decode(const uint8_t *pdu, size_t len,
                                              uint32_t *init_window,
                                              uint32_t *max_packet);
 
+int sodchan_wire_channel_open_fail_encode(uint32_t recipient_channel,
+                                          uint32_t reason,
+                                          const char *msg, size_t msg_len,
+                                          uint8_t *out, size_t out_cap,
+                                          size_t *out_len);
+
+int sodchan_wire_channel_open_fail_decode(const uint8_t *pdu, size_t len,
+                                          uint32_t *recipient_channel,
+                                          uint32_t *reason,
+                                          char *msg, size_t msg_cap,
+                                          size_t *msg_len);
+
 int sodchan_wire_channel_data_encode(uint32_t recipient_channel,
                                      const uint8_t *data, size_t data_len,
                                      uint8_t *out, size_t out_cap,
@@ -219,19 +231,37 @@ int sodchan_wire_channel_window_encode(uint32_t recipient_channel,
                                        uint8_t *out, size_t out_cap,
                                        size_t *out_len);
 
+int sodchan_wire_channel_window_decode(const uint8_t *pdu, size_t len,
+                                       uint32_t *recipient_channel,
+                                       uint32_t *bytes_to_add);
+
 int sodchan_wire_channel_eof_encode(uint32_t recipient_channel,
                                     uint8_t *out, size_t out_cap,
                                     size_t *out_len);
+
+int sodchan_wire_channel_eof_decode(const uint8_t *pdu, size_t len,
+                                    uint32_t *recipient_channel);
 
 int sodchan_wire_channel_close_encode(uint32_t recipient_channel,
                                       uint8_t *out, size_t out_cap,
                                       size_t *out_len);
 
+int sodchan_wire_channel_close_decode(const uint8_t *pdu, size_t len,
+                                      uint32_t *recipient_channel);
+
 int sodchan_wire_ping_encode(uint32_t opaque, uint8_t *out, size_t out_cap,
                              size_t *out_len);
 
+int sodchan_wire_ping_decode(const uint8_t *pdu, size_t len, uint32_t *opaque);
+
 int sodchan_wire_pong_encode(uint32_t opaque, uint8_t *out, size_t out_cap,
                              size_t *out_len);
+
+int sodchan_wire_pong_decode(const uint8_t *pdu, size_t len, uint32_t *opaque);
+
+int sodchan_wire_disconnect_decode(const uint8_t *pdu, size_t len,
+                                   uint32_t *reason, char *msg, size_t msg_cap,
+                                   size_t *msg_len);
 
 int sodchan_wire_disconnect_encode(uint32_t reason,
                                    const char *msg, size_t msg_len,

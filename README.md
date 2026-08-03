@@ -37,7 +37,7 @@ See `AGENTS.md` and `docs/libsodchan-design.md` (workspace design doc).
 
 ## Status
 
-**v0.5 (PR-5 auth)** — Full handshake + device pubkey AUTH_DEVICE / auth_decide → READY. Multiplexed channels in PR-6+.
+**v0.6 (PR-6 channels)** — Ready sessions carry named multiplexed channels with flow control. Host integration next.
 
 ## License
 

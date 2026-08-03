@@ -19,7 +19,6 @@
 | 006 | Core library as plumbing |
 | 009 | Consistent protocol interfaces |
 | 014 | Fixed libsodium crypto suite |
+| 015 | Channel names and flow control |
 | 016 | Identity and session authentication |
 | 017 | Normative wire format (suite V1) + vectors |
-
-ADR 015 (channels / flow control) lands with PR-6.

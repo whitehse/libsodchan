@@ -42,7 +42,7 @@ create → HELLO → SS_HEADER → AUTH → READY → DRAINING → CLOSED
                                       ↘ ERROR
 ```
 
-PR-5 implements through `READY` after AUTH_DEVICE + host `auth_decide`. Channels in PR-6.
+PR-6 implements named channels and windows after READY (see ADR 015).
 
 ## Sibling relationship
 

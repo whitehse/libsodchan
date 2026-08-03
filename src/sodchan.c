@@ -2,8 +2,9 @@
  * @file sodchan.c
  * @brief libsodchan core — pure state machine (no sockets).
  *
- * PR-4: HELLO + K16 server id_sig + KX + secretstream headers.
- * PR-5: AUTH_DEVICE / auth_decide / AUTH_OK|FAIL over secretstream → READY.
+ * PR-4: HELLO + K16 + KX + secretstream headers.
+ * PR-5: AUTH_DEVICE / auth_decide → READY.
+ * PR-6: multiplexed channels + flow control.
  */
 
 #include "sodchan_internal.h"
@@ -339,30 +340,106 @@ static uint32_t ss_frame_max_body(const sodchan_ctx_t *ctx)
 
 static int ss_send_pdu(sodchan_ctx_t *ctx, const uint8_t *plain, size_t plain_len)
 {
-    /* AUTH PDUs are small; stack buffer sized for typical + margin. */
-    uint8_t ct[2048];
+    size_t ct_max;
     unsigned long long clen = 0;
-    uint8_t frame[4 + 2048];
-    size_t flen = 0;
-    int rc;
+    uint8_t *ct_dst;
 
     if (!ctx->ss_push_ready || !plain || plain_len == 0) {
         return SODCHAN_ERR_STATE;
     }
-    if (plain_len + crypto_secretstream_xchacha20poly1305_ABYTES > sizeof(ct)) {
+    if (plain_len > ctx->max_record_size) {
+        return SODCHAN_ERR_PARAM;
+    }
+
+    out_compact(ctx);
+    ct_max = plain_len + crypto_secretstream_xchacha20poly1305_ABYTES;
+    if (4 + ct_max > sizeof(ctx->out_buf) - ctx->out_len) {
         return SODCHAN_ERR_FULL;
     }
+    if (ct_max > ss_frame_max_body(ctx)) {
+        return SODCHAN_ERR_PROTOCOL;
+    }
+
+    /* Encrypt directly into out_buf after a 4-byte length slot. */
+    ct_dst = ctx->out_buf + ctx->out_len + 4;
     if (crypto_secretstream_xchacha20poly1305_push(
-            &ctx->ss_push, ct, &clen, plain, plain_len, NULL, 0,
+            &ctx->ss_push, ct_dst, &clen, plain, plain_len, NULL, 0,
             crypto_secretstream_xchacha20poly1305_TAG_MESSAGE) != 0) {
         return SODCHAN_ERR_CRYPTO;
     }
-    rc = sodchan_wire_frame_encode_max(ct, (size_t)clen, ss_frame_max_body(ctx),
-                                       frame, sizeof(frame), &flen);
-    if (rc != SODCHAN_OK) {
-        return rc;
+    sodchan_wire_put_u32(ctx->out_buf + ctx->out_len, (uint32_t)clen);
+    ctx->out_len += 4 + (size_t)clen;
+    return SODCHAN_OK;
+}
+
+/* --- Channel helpers (PR-6) --- */
+
+static sodchan_channel_t *ch_by_local(sodchan_ctx_t *ctx, uint32_t local_id)
+{
+    size_t i;
+    for (i = 0; i < SODCHAN_MAX_CHANNELS; i++) {
+        if (ctx->channels[i].state != SODCHAN_CH_UNUSED &&
+            ctx->channels[i].local_id == local_id) {
+            return &ctx->channels[i];
+        }
     }
-    return out_append(ctx, frame, flen);
+    return NULL;
+}
+
+static sodchan_channel_t *ch_alloc(sodchan_ctx_t *ctx)
+{
+    size_t i;
+    if (ctx->active_channels >= ctx->max_channels) {
+        return NULL;
+    }
+    for (i = 0; i < SODCHAN_MAX_CHANNELS; i++) {
+        if (ctx->channels[i].state == SODCHAN_CH_UNUSED) {
+            sodchan_channel_t *ch = &ctx->channels[i];
+            memset(ch, 0, sizeof(*ch));
+            ch->local_id = ctx->next_local_channel_id++;
+            ctx->active_channels++;
+            return ch;
+        }
+    }
+    return NULL;
+}
+
+static void ch_free(sodchan_ctx_t *ctx, sodchan_channel_t *ch)
+{
+    if (!ch || ch->state == SODCHAN_CH_UNUSED) {
+        return;
+    }
+    memset(ch, 0, sizeof(*ch));
+    if (ctx->active_channels > 0) {
+        ctx->active_channels--;
+    }
+}
+
+static int channel_name_allowed(const sodchan_ctx_t *ctx, const char *name)
+{
+    const char *list;
+    size_t nlen;
+    const char *p;
+
+    if (!name || !name[0]) {
+        return 0;
+    }
+    list = ctx->allowed_channels ? ctx->allowed_channels
+                                 : SODCHAN_DEFAULT_ALLOWED_CHANNELS;
+    nlen = strlen(name);
+    p = list;
+    while (*p) {
+        const char *comma = strchr(p, ',');
+        size_t seglen = comma ? (size_t)(comma - p) : strlen(p);
+        if (seglen == nlen && memcmp(p, name, nlen) == 0) {
+            return 1;
+        }
+        if (!comma) {
+            break;
+        }
+        p = comma + 1;
+    }
+    return 0;
 }
 
 static int client_send_auth_device(sodchan_ctx_t *ctx)
@@ -542,20 +619,28 @@ static int handle_auth_fail_pdu(sodchan_ctx_t *ctx, const uint8_t *plain,
     return -1;
 }
 
+static int handle_mux_pdu(sodchan_ctx_t *ctx, const uint8_t *plain, size_t plen);
+
 static int handle_encrypted_pdu(sodchan_ctx_t *ctx, const uint8_t *ct, size_t ct_len)
 {
-    uint8_t plain[2048];
+    /* Max CHANNEL_DATA event payload + small mux header. */
+    uint8_t plain[SODCHAN_DATA_MAX + 64];
     unsigned long long plen = 0;
     unsigned char tag = 0;
     uint8_t ptype = 0;
+    size_t plain_max;
 
     if (!ctx->ss_pull_ready) {
         sodchan_i_set_error(ctx, SODCHAN_ERR_STATE, "ss pull not ready");
         return -1;
     }
-    if (ct_len < crypto_secretstream_xchacha20poly1305_ABYTES ||
-        ct_len - crypto_secretstream_xchacha20poly1305_ABYTES > sizeof(plain)) {
+    if (ct_len < crypto_secretstream_xchacha20poly1305_ABYTES) {
         sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "ss ciphertext size");
+        return -1;
+    }
+    plain_max = ct_len - crypto_secretstream_xchacha20poly1305_ABYTES;
+    if (plain_max > sizeof(plain) || plain_max > ctx->max_record_size) {
+        sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "ss plaintext too large");
         return -1;
     }
     if (crypto_secretstream_xchacha20poly1305_pull(
@@ -564,11 +649,18 @@ static int handle_encrypted_pdu(sodchan_ctx_t *ctx, const uint8_t *ct, size_t ct
         return -1;
     }
     if (tag == crypto_secretstream_xchacha20poly1305_TAG_FINAL) {
-        sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "unexpected TAG_FINAL");
-        return -1;
+        sodchan_event_t ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.type = SODCHAN_EVENT_DISCONNECTED;
+        (void)sodchan_i_queue_event(ctx, &ev);
+        ctx->state = SODCHAN_STATE_CLOSED;
+        return 0;
+    }
+    if (tag == crypto_secretstream_xchacha20poly1305_TAG_REKEY) {
+        return 0; /* sodium already rekeyed pull state */
     }
     if (plen == 0) {
-        return 0; /* rekey empty etc. */
+        return 0;
     }
     if (sodchan_wire_pdu_type(plain, (size_t)plen, &ptype) != SODCHAN_OK) {
         sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "empty pdu");
@@ -590,9 +682,277 @@ static int handle_encrypted_pdu(sodchan_ctx_t *ctx, const uint8_t *ct, size_t ct
         }
     }
 
-    /* READY mux: PR-6 */
-    sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "mux not implemented");
+    if (ctx->state == SODCHAN_STATE_READY ||
+        ctx->state == SODCHAN_STATE_DRAINING) {
+        return handle_mux_pdu(ctx, plain, (size_t)plen);
+    }
+
+    sodchan_i_set_error(ctx, SODCHAN_ERR_STATE, "pdu in wrong state");
     return -1;
+}
+
+static int handle_mux_pdu(sodchan_ctx_t *ctx, const uint8_t *plain, size_t plen)
+{
+    uint8_t ptype = plain[0];
+    sodchan_event_t ev;
+
+    switch (ptype) {
+    case SODCHAN_PDU_CHANNEL_OPEN: {
+        uint32_t peer_sender = 0, init_win = 0, max_pkt = 0;
+        char name[SODCHAN_CHANNEL_NAME_MAX + 1];
+        size_t nlen = 0;
+        sodchan_channel_t *ch;
+
+        if (sodchan_wire_channel_open_decode(plain, plen, &peer_sender, &init_win,
+                                             &max_pkt, name, sizeof(name),
+                                             &nlen) != SODCHAN_OK) {
+            sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "OPEN decode");
+            return -1;
+        }
+        if (!channel_name_allowed(ctx, name)) {
+            uint8_t fail[64];
+            size_t fl = 0;
+            (void)sodchan_wire_channel_open_fail_encode(
+                peer_sender, SODCHAN_REASON_ADMIN_PROHIBITED, "not allowed", 11,
+                fail, sizeof(fail), &fl);
+            (void)ss_send_pdu(ctx, fail, fl);
+            return 0;
+        }
+        ch = ch_alloc(ctx);
+        if (!ch) {
+            uint8_t fail[64];
+            size_t fl = 0;
+            (void)sodchan_wire_channel_open_fail_encode(
+                peer_sender, SODCHAN_REASON_RESOURCE_SHORTAGE, NULL, 0, fail,
+                sizeof(fail), &fl);
+            (void)ss_send_pdu(ctx, fail, fl);
+            return 0;
+        }
+        ch->state = SODCHAN_CH_PENDING;
+        ch->peer_id = peer_sender;
+        ch->have_peer_id = 1;
+        ch->send_window = init_win;
+        ch->max_packet = max_pkt ? max_pkt : ctx->max_packet;
+        ch->recv_window = ctx->initial_window;
+        snprintf(ch->name, sizeof(ch->name), "%s", name);
+
+        memset(&ev, 0, sizeof(ev));
+        ev.type = SODCHAN_EVENT_CHANNEL_OPEN;
+        ev.u.channel.channel_id = ch->local_id;
+        ev.u.channel.peer_channel_id = peer_sender;
+        snprintf(ev.u.channel.name, sizeof(ev.u.channel.name), "%s", name);
+        ev.u.channel.init_window = init_win;
+        ev.u.channel.max_packet = ch->max_packet;
+        (void)sodchan_i_queue_event(ctx, &ev);
+        return 0;
+    }
+    case SODCHAN_PDU_CHANNEL_OPEN_CONFIRM: {
+        uint32_t peer_sender = 0, recipient = 0, init_win = 0, max_pkt = 0;
+        sodchan_channel_t *ch;
+
+        if (sodchan_wire_channel_open_confirm_decode(plain, plen, &peer_sender,
+                                                     &recipient, &init_win,
+                                                     &max_pkt) != SODCHAN_OK) {
+            sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "CONFIRM decode");
+            return -1;
+        }
+        ch = ch_by_local(ctx, recipient);
+        if (!ch || ch->state != SODCHAN_CH_OPENING) {
+            sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "CONFIRM unknown");
+            return -1;
+        }
+        ch->peer_id = peer_sender;
+        ch->have_peer_id = 1;
+        ch->send_window = init_win;
+        ch->max_packet = max_pkt ? max_pkt : ctx->max_packet;
+        ch->state = SODCHAN_CH_OPEN;
+
+        memset(&ev, 0, sizeof(ev));
+        ev.type = SODCHAN_EVENT_CHANNEL_OPENED;
+        ev.u.channel.channel_id = ch->local_id;
+        ev.u.channel.peer_channel_id = peer_sender;
+        snprintf(ev.u.channel.name, sizeof(ev.u.channel.name), "%s", ch->name);
+        ev.u.channel.init_window = init_win;
+        ev.u.channel.max_packet = ch->max_packet;
+        (void)sodchan_i_queue_event(ctx, &ev);
+        return 0;
+    }
+    case SODCHAN_PDU_CHANNEL_OPEN_FAIL: {
+        uint32_t recipient = 0, reason = 0;
+        char msg[128];
+        size_t mlen = 0;
+        sodchan_channel_t *ch;
+
+        if (sodchan_wire_channel_open_fail_decode(plain, plen, &recipient, &reason,
+                                                  msg, sizeof(msg),
+                                                  &mlen) != SODCHAN_OK) {
+            sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "OPEN_FAIL decode");
+            return -1;
+        }
+        ch = ch_by_local(ctx, recipient);
+        if (ch && ch->state == SODCHAN_CH_OPENING) {
+            memset(&ev, 0, sizeof(ev));
+            ev.type = SODCHAN_EVENT_CHANNEL_OPEN_FAIL;
+            ev.u.channel.channel_id = ch->local_id;
+            snprintf(ev.u.channel.name, sizeof(ev.u.channel.name), "%s",
+                     ch->name);
+            (void)sodchan_i_queue_event(ctx, &ev);
+            ch_free(ctx, ch);
+        }
+        (void)reason;
+        return 0;
+    }
+    case SODCHAN_PDU_CHANNEL_DATA: {
+        uint32_t recipient = 0;
+        const uint8_t *data = NULL;
+        size_t dlen = 0;
+        sodchan_channel_t *ch;
+
+        if (sodchan_wire_channel_data_decode(plain, plen, &recipient, &data,
+                                             &dlen) != SODCHAN_OK) {
+            sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "DATA decode");
+            return -1;
+        }
+        ch = ch_by_local(ctx, recipient);
+        if (!ch || (ch->state != SODCHAN_CH_OPEN &&
+                    ch->state != SODCHAN_CH_PENDING)) {
+            /* Pending should not receive data; OPEN only after confirm */
+            if (!ch || ch->state != SODCHAN_CH_OPEN) {
+                sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "DATA bad ch");
+                return -1;
+            }
+        }
+        if (ch->state != SODCHAN_CH_OPEN) {
+            sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "DATA not open");
+            return -1;
+        }
+        if (dlen > ch->recv_window) {
+            sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "DATA over window");
+            return -1;
+        }
+        if (dlen > SODCHAN_DATA_MAX) {
+            sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "DATA over max");
+            return -1;
+        }
+        ch->recv_window -= (uint32_t)dlen;
+
+        memset(&ev, 0, sizeof(ev));
+        ev.type = SODCHAN_EVENT_CHANNEL_DATA;
+        ev.u.data.channel_id = ch->local_id;
+        ev.u.data.len = dlen;
+        if (dlen && data) {
+            memcpy(ev.u.data.data, data, dlen);
+        }
+        (void)sodchan_i_queue_event(ctx, &ev);
+        return 0;
+    }
+    case SODCHAN_PDU_CHANNEL_WINDOW: {
+        uint32_t recipient = 0, add = 0;
+        sodchan_channel_t *ch;
+
+        if (sodchan_wire_channel_window_decode(plain, plen, &recipient, &add) !=
+            SODCHAN_OK) {
+            sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "WINDOW decode");
+            return -1;
+        }
+        ch = ch_by_local(ctx, recipient);
+        if (!ch || ch->state != SODCHAN_CH_OPEN) {
+            return 0; /* ignore stale */
+        }
+        ch->send_window += add;
+        memset(&ev, 0, sizeof(ev));
+        ev.type = SODCHAN_EVENT_CHANNEL_WINDOW;
+        ev.u.window.channel_id = ch->local_id;
+        ev.u.window.bytes_added = add;
+        ev.u.window.window_avail = ch->send_window;
+        (void)sodchan_i_queue_event(ctx, &ev);
+        return 0;
+    }
+    case SODCHAN_PDU_CHANNEL_EOF: {
+        uint32_t recipient = 0;
+        sodchan_channel_t *ch;
+
+        if (sodchan_wire_channel_eof_decode(plain, plen, &recipient) !=
+            SODCHAN_OK) {
+            sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "EOF decode");
+            return -1;
+        }
+        ch = ch_by_local(ctx, recipient);
+        if (!ch) {
+            return 0;
+        }
+        ch->remote_eof = 1;
+        memset(&ev, 0, sizeof(ev));
+        ev.type = SODCHAN_EVENT_CHANNEL_EOF;
+        ev.u.channel.channel_id = ch->local_id;
+        (void)sodchan_i_queue_event(ctx, &ev);
+        return 0;
+    }
+    case SODCHAN_PDU_CHANNEL_CLOSE: {
+        uint32_t recipient = 0;
+        sodchan_channel_t *ch;
+
+        if (sodchan_wire_channel_close_decode(plain, plen, &recipient) !=
+            SODCHAN_OK) {
+            sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "CLOSE decode");
+            return -1;
+        }
+        ch = ch_by_local(ctx, recipient);
+        if (!ch) {
+            return 0;
+        }
+        memset(&ev, 0, sizeof(ev));
+        ev.type = SODCHAN_EVENT_CHANNEL_CLOSE;
+        ev.u.channel.channel_id = ch->local_id;
+        (void)sodchan_i_queue_event(ctx, &ev);
+        ch_free(ctx, ch);
+        return 0;
+    }
+    case SODCHAN_PDU_PING: {
+        uint32_t opaque = 0;
+        uint8_t pong[8];
+        size_t pl = 0;
+
+        if (sodchan_wire_ping_decode(plain, plen, &opaque) != SODCHAN_OK) {
+            sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "PING decode");
+            return -1;
+        }
+        memset(&ev, 0, sizeof(ev));
+        ev.type = SODCHAN_EVENT_PING;
+        (void)sodchan_i_queue_event(ctx, &ev);
+        /* Auto-reply PONG for keepalive (protocol convenience). */
+        if (sodchan_wire_pong_encode(opaque, pong, sizeof(pong), &pl) ==
+            SODCHAN_OK) {
+            (void)ss_send_pdu(ctx, pong, pl);
+        }
+        return 0;
+    }
+    case SODCHAN_PDU_PONG:
+        return 0;
+    case SODCHAN_PDU_DISCONNECT: {
+        uint32_t reason = 0;
+        char msg[128];
+        size_t mlen = 0;
+
+        if (sodchan_wire_disconnect_decode(plain, plen, &reason, msg, sizeof(msg),
+                                           &mlen) != SODCHAN_OK) {
+            sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "DISCONNECT decode");
+            return -1;
+        }
+        memset(&ev, 0, sizeof(ev));
+        ev.type = SODCHAN_EVENT_DISCONNECTED;
+        ev.u.error.code = (int)reason;
+        if (mlen) {
+            snprintf(ev.u.error.message, sizeof(ev.u.error.message), "%s", msg);
+        }
+        (void)sodchan_i_queue_event(ctx, &ev);
+        ctx->state = SODCHAN_STATE_CLOSED;
+        return 0;
+    }
+    default:
+        sodchan_i_set_error(ctx, SODCHAN_ERR_PROTOCOL, "unknown mux pdu");
+        return -1;
+    }
 }
 
 static int handle_peer_hello(sodchan_ctx_t *ctx, const uint8_t *body, size_t len)
@@ -755,11 +1115,6 @@ static void process_input(sodchan_ctx_t *ctx)
         int rc;
         int encrypted = (ctx->hs == SODCHAN_HS_DONE);
 
-        /* Mux channel data in READY is PR-6. */
-        if (ctx->state == SODCHAN_STATE_READY) {
-            return;
-        }
-
         if (ctx->in_len < 4) {
             return;
         }
@@ -799,11 +1154,6 @@ static void process_input(sodchan_ctx_t *ctx)
 
         memmove(ctx->in_buf, ctx->in_buf + consumed, ctx->in_len - consumed);
         ctx->in_len -= consumed;
-
-        /* READY: stop processing until PR-6 mux handlers exist */
-        if (ctx->state == SODCHAN_STATE_READY && ctx->in_len == 0) {
-            return;
-        }
     }
 }
 
@@ -920,6 +1270,9 @@ void sodchan_reset(sodchan_ctx_t *ctx)
     ctx->auth_awaiting_decide = 0;
     ctx->auth_decided = 0;
     ctx->auth_complete = 0;
+    memset(ctx->channels, 0, sizeof(ctx->channels));
+    ctx->next_local_channel_id = 0;
+    ctx->active_channels = 0;
     ctx->error = 0;
     ctx->error_msg[0] = '\0';
     ctx->event_head = 0;
@@ -1055,85 +1408,286 @@ int sodchan_auth_decide(sodchan_ctx_t *ctx, int accept)
 int sodchan_channel_open(sodchan_ctx_t *ctx, const char *name,
                          uint32_t *local_id_out)
 {
-    (void)name;
-    (void)local_id_out;
-    if (!ctx) {
+    sodchan_channel_t *ch;
+    uint8_t pdu[128];
+    size_t plen = 0;
+    size_t nlen;
+
+    if (!ctx || !name || !name[0]) {
         return SODCHAN_ERR_PARAM;
     }
-    return SODCHAN_ERR_STATE;
+    if (ctx->state != SODCHAN_STATE_READY) {
+        return SODCHAN_ERR_STATE;
+    }
+    nlen = strlen(name);
+    if (nlen > SODCHAN_CHANNEL_NAME_MAX) {
+        return SODCHAN_ERR_PARAM;
+    }
+    if (!channel_name_allowed(ctx, name)) {
+        return SODCHAN_ERR_REJECTED;
+    }
+    ch = ch_alloc(ctx);
+    if (!ch) {
+        return SODCHAN_ERR_FULL;
+    }
+    ch->state = SODCHAN_CH_OPENING;
+    ch->recv_window = ctx->initial_window;
+    ch->max_packet = ctx->max_packet;
+    snprintf(ch->name, sizeof(ch->name), "%s", name);
+
+    if (sodchan_wire_channel_open_encode(ch->local_id, ctx->initial_window,
+                                         ctx->max_packet, name, nlen, pdu,
+                                         sizeof(pdu), &plen) != SODCHAN_OK) {
+        ch_free(ctx, ch);
+        return SODCHAN_ERR_PROTOCOL;
+    }
+    if (ss_send_pdu(ctx, pdu, plen) != SODCHAN_OK) {
+        ch_free(ctx, ch);
+        return SODCHAN_ERR_FULL;
+    }
+    if (local_id_out) {
+        *local_id_out = ch->local_id;
+    }
+    return SODCHAN_OK;
 }
 
 int sodchan_channel_accept(sodchan_ctx_t *ctx, uint32_t local_id, int accept)
 {
-    (void)local_id;
-    (void)accept;
+    sodchan_channel_t *ch;
+    uint8_t pdu[64];
+    size_t plen = 0;
+
     if (!ctx) {
         return SODCHAN_ERR_PARAM;
     }
-    return SODCHAN_ERR_STATE;
+    if (ctx->state != SODCHAN_STATE_READY) {
+        return SODCHAN_ERR_STATE;
+    }
+    ch = ch_by_local(ctx, local_id);
+    if (!ch || ch->state != SODCHAN_CH_PENDING) {
+        return SODCHAN_ERR_STATE;
+    }
+    if (!ch->have_peer_id) {
+        return SODCHAN_ERR_STATE;
+    }
+
+    if (accept) {
+        if (sodchan_wire_channel_open_confirm_encode(
+                ch->local_id, ch->peer_id, ctx->initial_window, ctx->max_packet,
+                pdu, sizeof(pdu), &plen) != SODCHAN_OK) {
+            return SODCHAN_ERR_PROTOCOL;
+        }
+        if (ss_send_pdu(ctx, pdu, plen) != SODCHAN_OK) {
+            return SODCHAN_ERR_FULL;
+        }
+        ch->state = SODCHAN_CH_OPEN;
+        ch->recv_window = ctx->initial_window;
+        {
+            sodchan_event_t ev;
+            memset(&ev, 0, sizeof(ev));
+            ev.type = SODCHAN_EVENT_CHANNEL_OPENED;
+            ev.u.channel.channel_id = ch->local_id;
+            ev.u.channel.peer_channel_id = ch->peer_id;
+            snprintf(ev.u.channel.name, sizeof(ev.u.channel.name), "%s",
+                     ch->name);
+            ev.u.channel.init_window = ctx->initial_window;
+            ev.u.channel.max_packet = ctx->max_packet;
+            (void)sodchan_i_queue_event(ctx, &ev);
+        }
+        return SODCHAN_OK;
+    }
+
+    if (sodchan_wire_channel_open_fail_encode(ch->peer_id,
+                                              SODCHAN_REASON_ADMIN_PROHIBITED,
+                                              NULL, 0, pdu, sizeof(pdu),
+                                              &plen) != SODCHAN_OK) {
+        return SODCHAN_ERR_PROTOCOL;
+    }
+    if (ss_send_pdu(ctx, pdu, plen) != SODCHAN_OK) {
+        return SODCHAN_ERR_FULL;
+    }
+    ch_free(ctx, ch);
+    return SODCHAN_OK;
 }
 
 int sodchan_channel_send(sodchan_ctx_t *ctx, uint32_t local_id,
                          const uint8_t *data, size_t len)
 {
-    (void)local_id;
-    (void)data;
-    (void)len;
-    if (!ctx) {
+    sodchan_channel_t *ch;
+    uint8_t *pdu;
+    size_t plen = 0;
+    size_t pdu_cap;
+    int rc;
+
+    if (!ctx || (len > 0 && !data)) {
         return SODCHAN_ERR_PARAM;
     }
-    return SODCHAN_ERR_STATE;
+    if (ctx->state != SODCHAN_STATE_READY) {
+        return SODCHAN_ERR_STATE;
+    }
+    ch = ch_by_local(ctx, local_id);
+    if (!ch || ch->state != SODCHAN_CH_OPEN || !ch->have_peer_id) {
+        return SODCHAN_ERR_NOTFOUND;
+    }
+    if (ch->local_eof) {
+        return SODCHAN_ERR_STATE;
+    }
+    if (len > ch->max_packet || len > SODCHAN_DATA_MAX) {
+        return SODCHAN_ERR_PARAM;
+    }
+    if (len > ch->send_window) {
+        return SODCHAN_ERR_WINDOW;
+    }
+
+    pdu_cap = 9 + len;
+    pdu = (uint8_t *)malloc(pdu_cap);
+    if (!pdu) {
+        return SODCHAN_ERR_NOMEM;
+    }
+    rc = sodchan_wire_channel_data_encode(ch->peer_id, data, len, pdu, pdu_cap,
+                                          &plen);
+    if (rc != SODCHAN_OK) {
+        free(pdu);
+        return rc;
+    }
+    rc = ss_send_pdu(ctx, pdu, plen);
+    free(pdu);
+    if (rc != SODCHAN_OK) {
+        return rc;
+    }
+    ch->send_window -= (uint32_t)len;
+    return SODCHAN_OK;
 }
 
 uint32_t sodchan_channel_window_avail(const sodchan_ctx_t *ctx,
                                       uint32_t local_id)
 {
-    (void)local_id;
+    size_t i;
     if (!ctx) {
         return 0;
+    }
+    for (i = 0; i < SODCHAN_MAX_CHANNELS; i++) {
+        if (ctx->channels[i].state == SODCHAN_CH_OPEN &&
+            ctx->channels[i].local_id == local_id) {
+            return ctx->channels[i].send_window;
+        }
     }
     return 0;
 }
 
 int sodchan_channel_eof(sodchan_ctx_t *ctx, uint32_t local_id)
 {
-    (void)local_id;
+    sodchan_channel_t *ch;
+    uint8_t pdu[8];
+    size_t plen = 0;
+
     if (!ctx) {
         return SODCHAN_ERR_PARAM;
     }
-    return SODCHAN_ERR_STATE;
+    if (ctx->state != SODCHAN_STATE_READY) {
+        return SODCHAN_ERR_STATE;
+    }
+    ch = ch_by_local(ctx, local_id);
+    if (!ch || ch->state != SODCHAN_CH_OPEN || !ch->have_peer_id) {
+        return SODCHAN_ERR_NOTFOUND;
+    }
+    if (ch->local_eof) {
+        return SODCHAN_OK;
+    }
+    if (sodchan_wire_channel_eof_encode(ch->peer_id, pdu, sizeof(pdu), &plen) !=
+        SODCHAN_OK) {
+        return SODCHAN_ERR_PROTOCOL;
+    }
+    if (ss_send_pdu(ctx, pdu, plen) != SODCHAN_OK) {
+        return SODCHAN_ERR_FULL;
+    }
+    ch->local_eof = 1;
+    return SODCHAN_OK;
 }
 
 int sodchan_channel_close(sodchan_ctx_t *ctx, uint32_t local_id)
 {
-    (void)local_id;
+    sodchan_channel_t *ch;
+    uint8_t pdu[8];
+    size_t plen = 0;
+
     if (!ctx) {
         return SODCHAN_ERR_PARAM;
     }
-    return SODCHAN_ERR_STATE;
+    if (ctx->state != SODCHAN_STATE_READY &&
+        ctx->state != SODCHAN_STATE_DRAINING) {
+        return SODCHAN_ERR_STATE;
+    }
+    ch = ch_by_local(ctx, local_id);
+    if (!ch || ch->state == SODCHAN_CH_UNUSED) {
+        return SODCHAN_ERR_NOTFOUND;
+    }
+    if (ch->have_peer_id && ch->state == SODCHAN_CH_OPEN) {
+        if (sodchan_wire_channel_close_encode(ch->peer_id, pdu, sizeof(pdu),
+                                              &plen) == SODCHAN_OK) {
+            (void)ss_send_pdu(ctx, pdu, plen);
+        }
+    }
+    ch_free(ctx, ch);
+    return SODCHAN_OK;
 }
 
 int sodchan_channel_window_adjust(sodchan_ctx_t *ctx, uint32_t local_id,
                                   uint32_t credit)
 {
-    (void)local_id;
-    (void)credit;
-    if (!ctx) {
+    sodchan_channel_t *ch;
+    uint8_t pdu[16];
+    size_t plen = 0;
+
+    if (!ctx || credit == 0) {
         return SODCHAN_ERR_PARAM;
     }
-    return SODCHAN_ERR_STATE;
+    if (ctx->state != SODCHAN_STATE_READY) {
+        return SODCHAN_ERR_STATE;
+    }
+    ch = ch_by_local(ctx, local_id);
+    if (!ch || ch->state != SODCHAN_CH_OPEN || !ch->have_peer_id) {
+        return SODCHAN_ERR_NOTFOUND;
+    }
+    if (sodchan_wire_channel_window_encode(ch->peer_id, credit, pdu, sizeof(pdu),
+                                           &plen) != SODCHAN_OK) {
+        return SODCHAN_ERR_PROTOCOL;
+    }
+    if (ss_send_pdu(ctx, pdu, plen) != SODCHAN_OK) {
+        return SODCHAN_ERR_FULL;
+    }
+    ch->recv_window += credit;
+    return SODCHAN_OK;
 }
 
 int sodchan_disconnect(sodchan_ctx_t *ctx, int reason, const char *msg)
 {
-    (void)reason;
-    (void)msg;
+    uint8_t pdu[128];
+    size_t plen = 0;
+    size_t mlen = 0;
+
     if (!ctx) {
         return SODCHAN_ERR_PARAM;
     }
     if (ctx->state == SODCHAN_STATE_CLOSED) {
         return SODCHAN_OK;
     }
-    ctx->state = SODCHAN_STATE_CLOSED;
+    if (msg) {
+        mlen = strlen(msg);
+        if (mlen > 64) {
+            mlen = 64;
+        }
+    }
+    if (ctx->ss_push_ready &&
+        (ctx->state == SODCHAN_STATE_READY || ctx->state == SODCHAN_STATE_AUTH ||
+         ctx->state == SODCHAN_STATE_DRAINING)) {
+        if (sodchan_wire_disconnect_encode((uint32_t)reason, msg, mlen, pdu,
+                                           sizeof(pdu), &plen) == SODCHAN_OK) {
+            (void)ss_send_pdu(ctx, pdu, plen);
+        }
+        ctx->state = SODCHAN_STATE_DRAINING;
+    } else {
+        ctx->state = SODCHAN_STATE_CLOSED;
+    }
     return SODCHAN_OK;
 }

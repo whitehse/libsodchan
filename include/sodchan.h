@@ -26,7 +26,7 @@ extern "C" {
 #endif
 
 #define SODCHAN_VERSION_MAJOR 0
-#define SODCHAN_VERSION_MINOR 5
+#define SODCHAN_VERSION_MINOR 6
 #define SODCHAN_VERSION_PATCH 0
 
 /* Internal AUTH_FAIL reasons (event u.error.code / metrics; wire always UNSPEC). */

@@ -29,17 +29,16 @@
 - No new syscalls/callbacks.
 - Dialectic tests cover READY → channel data when implemented.
 
-**Current status (v0.5 / PR-5 auth)**:
-- Handshake through secretstream (PR-4) + **device auth** (PR-5).
-- Client auto-sends encrypted `AUTH_DEVICE` when `client_id_sk` set.
-- Server verifies sig → `AUTH_DEVICE` event → `auth_decide` / `auth_decide_ex`.
-- AUTH_OK → READY; AUTH_FAIL (wire UNSPEC) → ERROR; bad sig never calls decide.
-- Events: HELLO_RECEIVED, KX_COMPLETE, AUTH_DEVICE, AUTHENTICATED, AUTH_FAILED.
-- Tests: smoke, crypto, wire, dialectic (→READY), mitm_pin, **auth**.
+**Current status (v0.6 / PR-6 channels)**:
+- Full session: HELLO → KX → AUTH → READY → **named channels**.
+- `channel_open` / `accept` / `send` / `window_adjust` / `eof` / `close`.
+- Flow control: per-channel windows; `ERR_WINDOW` / `ERR_FULL`; allowlist filter.
+- Events: CHANNEL_OPEN/OPENED/OPEN_FAIL/DATA/WINDOW/EOF/CLOSE, PING.
+- Tests: smoke, crypto, wire, dialectic, mitm, auth, **channels**.
 
 **Next PRs** (see design PR plan):
-- PR-6: multiplexed channels + flow control
-- PR-7+: fuzz, host/agent/mobile
+- PR-7: fuzz + valgrind
+- PR-8+: edgehost / cpe_agent / mobile
 
 **Dependencies**:
 - **libsodium** (required). Install `libsodium-dev` or set `SODIUM_ROOT` / extract headers under `third_party/sodium-prefix/usr`.

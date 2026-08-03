@@ -21,9 +21,35 @@
 #define SODCHAN_DEFAULT_INIT_WINDOW   (256u * 1024u)
 #define SODCHAN_DEFAULT_MAX_PACKET    (64u * 1024u)
 
-#define SODCHAN_CFG_STORE_SIZE        1024
-#define SODCHAN_OUT_BUF_SIZE          (64u * 1024u)
-#define SODCHAN_IN_BUF_SIZE           (64u * 1024u)
+#define SODCHAN_CFG_STORE_SIZE        2048
+/* Room for one max CHANNEL_DATA (64 KiB) + secretstream + frame overhead. */
+#define SODCHAN_OUT_BUF_SIZE          (128u * 1024u)
+#define SODCHAN_IN_BUF_SIZE           (128u * 1024u)
+
+#define SODCHAN_DEFAULT_ALLOWED_CHANNELS                                       \
+    "edge-telemetry,edge-pg,edge-ai,edge-control,edge-usp,shell,sftp,exec,"  \
+    "tun,tap,mobile-control,mobile-sync,mobile-audit,mobile-notify"
+
+typedef enum {
+    SODCHAN_CH_UNUSED = 0,
+    SODCHAN_CH_OPENING,   /* we sent OPEN, wait CONFIRM/FAIL */
+    SODCHAN_CH_PENDING,   /* peer OPEN, wait channel_accept */
+    SODCHAN_CH_OPEN,
+    SODCHAN_CH_CLOSED
+} sodchan_ch_state_t;
+
+typedef struct {
+    sodchan_ch_state_t state;
+    uint32_t local_id;
+    uint32_t peer_id;
+    int      have_peer_id;
+    char     name[SODCHAN_CHANNEL_NAME_MAX + 1];
+    uint32_t send_window; /* bytes we may still send to peer */
+    uint32_t recv_window; /* remaining credit peer has toward us */
+    uint32_t max_packet;  /* peer max packet (for our sends) */
+    int      local_eof;
+    int      remote_eof;
+} sodchan_channel_t;
 
 /* Handshake sub-progress (public state is HELLO / SS_HEADER / AUTH). */
 typedef enum {
@@ -83,6 +109,11 @@ struct sodchan_ctx {
     int auth_awaiting_decide;   /* SERVER: sig ok, waiting auth_decide */
     int auth_decided;           /* SERVER: decide already called */
     int auth_complete;          /* both: session authenticated */
+
+    /* Channels (PR-6) */
+    sodchan_channel_t channels[SODCHAN_MAX_CHANNELS];
+    uint32_t next_local_channel_id;
+    uint32_t active_channels;
 
     char cfg_store[SODCHAN_CFG_STORE_SIZE];
     size_t cfg_store_used;

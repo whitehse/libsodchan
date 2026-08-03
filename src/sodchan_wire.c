@@ -525,6 +525,69 @@ int sodchan_wire_channel_open_confirm_decode(const uint8_t *pdu, size_t len,
     return SODCHAN_OK;
 }
 
+int sodchan_wire_channel_open_fail_encode(uint32_t recipient_channel,
+                                          uint32_t reason,
+                                          const char *msg, size_t msg_len,
+                                          uint8_t *out, size_t out_cap,
+                                          size_t *out_len)
+{
+    size_t need;
+
+    if (!out || !out_len) {
+        return SODCHAN_ERR_PARAM;
+    }
+    if (msg_len > 255 || (msg_len > 0 && !msg)) {
+        return SODCHAN_ERR_PARAM;
+    }
+    need = 1 + 4 + 4 + 1 + msg_len;
+    if (out_cap < need) {
+        return SODCHAN_ERR_FULL;
+    }
+    out[0] = (uint8_t)SODCHAN_PDU_CHANNEL_OPEN_FAIL;
+    sodchan_wire_put_u32(out + 1, recipient_channel);
+    sodchan_wire_put_u32(out + 5, reason);
+    out[9] = (uint8_t)msg_len;
+    if (msg_len) {
+        memcpy(out + 10, msg, msg_len);
+    }
+    *out_len = need;
+    return SODCHAN_OK;
+}
+
+int sodchan_wire_channel_open_fail_decode(const uint8_t *pdu, size_t len,
+                                          uint32_t *recipient_channel,
+                                          uint32_t *reason,
+                                          char *msg, size_t msg_cap,
+                                          size_t *msg_len)
+{
+    uint8_t mlen;
+
+    if (!pdu || !recipient_channel || !reason || !msg_len) {
+        return SODCHAN_ERR_PARAM;
+    }
+    if (len < 10 || pdu[0] != SODCHAN_PDU_CHANNEL_OPEN_FAIL) {
+        return SODCHAN_ERR_PROTOCOL;
+    }
+    *recipient_channel = sodchan_wire_get_u32(pdu + 1);
+    *reason = sodchan_wire_get_u32(pdu + 5);
+    mlen = pdu[9];
+    if (len != 10 + (size_t)mlen) {
+        return SODCHAN_ERR_PROTOCOL;
+    }
+    *msg_len = mlen;
+    if (msg && msg_cap > 0) {
+        size_t copy = mlen;
+        if (copy >= msg_cap) {
+            copy = msg_cap - 1;
+        }
+        if (mlen) {
+            memcpy(msg, pdu + 10, copy);
+        }
+        msg[copy] = '\0';
+    }
+    return SODCHAN_OK;
+}
+
 int sodchan_wire_channel_data_encode(uint32_t recipient_channel,
                                      const uint8_t *data, size_t data_len,
                                      uint8_t *out, size_t out_cap,
@@ -595,6 +658,21 @@ int sodchan_wire_channel_window_encode(uint32_t recipient_channel,
     return SODCHAN_OK;
 }
 
+int sodchan_wire_channel_window_decode(const uint8_t *pdu, size_t len,
+                                       uint32_t *recipient_channel,
+                                       uint32_t *bytes_to_add)
+{
+    if (!pdu || !recipient_channel || !bytes_to_add) {
+        return SODCHAN_ERR_PARAM;
+    }
+    if (len != 9 || pdu[0] != SODCHAN_PDU_CHANNEL_WINDOW) {
+        return SODCHAN_ERR_PROTOCOL;
+    }
+    *recipient_channel = sodchan_wire_get_u32(pdu + 1);
+    *bytes_to_add = sodchan_wire_get_u32(pdu + 5);
+    return SODCHAN_OK;
+}
+
 int sodchan_wire_channel_eof_encode(uint32_t recipient_channel,
                                     uint8_t *out, size_t out_cap,
                                     size_t *out_len)
@@ -608,6 +686,19 @@ int sodchan_wire_channel_eof_encode(uint32_t recipient_channel,
     out[0] = (uint8_t)SODCHAN_PDU_CHANNEL_EOF;
     sodchan_wire_put_u32(out + 1, recipient_channel);
     *out_len = 5;
+    return SODCHAN_OK;
+}
+
+int sodchan_wire_channel_eof_decode(const uint8_t *pdu, size_t len,
+                                    uint32_t *recipient_channel)
+{
+    if (!pdu || !recipient_channel) {
+        return SODCHAN_ERR_PARAM;
+    }
+    if (len != 5 || pdu[0] != SODCHAN_PDU_CHANNEL_EOF) {
+        return SODCHAN_ERR_PROTOCOL;
+    }
+    *recipient_channel = sodchan_wire_get_u32(pdu + 1);
     return SODCHAN_OK;
 }
 
@@ -627,6 +718,19 @@ int sodchan_wire_channel_close_encode(uint32_t recipient_channel,
     return SODCHAN_OK;
 }
 
+int sodchan_wire_channel_close_decode(const uint8_t *pdu, size_t len,
+                                      uint32_t *recipient_channel)
+{
+    if (!pdu || !recipient_channel) {
+        return SODCHAN_ERR_PARAM;
+    }
+    if (len != 5 || pdu[0] != SODCHAN_PDU_CHANNEL_CLOSE) {
+        return SODCHAN_ERR_PROTOCOL;
+    }
+    *recipient_channel = sodchan_wire_get_u32(pdu + 1);
+    return SODCHAN_OK;
+}
+
 int sodchan_wire_ping_encode(uint32_t opaque, uint8_t *out, size_t out_cap,
                              size_t *out_len)
 {
@@ -642,6 +746,18 @@ int sodchan_wire_ping_encode(uint32_t opaque, uint8_t *out, size_t out_cap,
     return SODCHAN_OK;
 }
 
+int sodchan_wire_ping_decode(const uint8_t *pdu, size_t len, uint32_t *opaque)
+{
+    if (!pdu || !opaque) {
+        return SODCHAN_ERR_PARAM;
+    }
+    if (len != 5 || pdu[0] != SODCHAN_PDU_PING) {
+        return SODCHAN_ERR_PROTOCOL;
+    }
+    *opaque = sodchan_wire_get_u32(pdu + 1);
+    return SODCHAN_OK;
+}
+
 int sodchan_wire_pong_encode(uint32_t opaque, uint8_t *out, size_t out_cap,
                              size_t *out_len)
 {
@@ -654,6 +770,49 @@ int sodchan_wire_pong_encode(uint32_t opaque, uint8_t *out, size_t out_cap,
     out[0] = (uint8_t)SODCHAN_PDU_PONG;
     sodchan_wire_put_u32(out + 1, opaque);
     *out_len = 5;
+    return SODCHAN_OK;
+}
+
+int sodchan_wire_pong_decode(const uint8_t *pdu, size_t len, uint32_t *opaque)
+{
+    if (!pdu || !opaque) {
+        return SODCHAN_ERR_PARAM;
+    }
+    if (len != 5 || pdu[0] != SODCHAN_PDU_PONG) {
+        return SODCHAN_ERR_PROTOCOL;
+    }
+    *opaque = sodchan_wire_get_u32(pdu + 1);
+    return SODCHAN_OK;
+}
+
+int sodchan_wire_disconnect_decode(const uint8_t *pdu, size_t len,
+                                   uint32_t *reason, char *msg, size_t msg_cap,
+                                   size_t *msg_len)
+{
+    uint8_t mlen;
+
+    if (!pdu || !reason || !msg_len) {
+        return SODCHAN_ERR_PARAM;
+    }
+    if (len < 6 || pdu[0] != SODCHAN_PDU_DISCONNECT) {
+        return SODCHAN_ERR_PROTOCOL;
+    }
+    *reason = sodchan_wire_get_u32(pdu + 1);
+    mlen = pdu[5];
+    if (len != 6 + (size_t)mlen) {
+        return SODCHAN_ERR_PROTOCOL;
+    }
+    *msg_len = mlen;
+    if (msg && msg_cap > 0) {
+        size_t copy = mlen;
+        if (copy >= msg_cap) {
+            copy = msg_cap - 1;
+        }
+        if (mlen) {
+            memcpy(msg, pdu + 6, copy);
+        }
+        msg[copy] = '\0';
+    }
     return SODCHAN_OK;
 }
 
