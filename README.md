@@ -37,7 +37,15 @@ See `AGENTS.md` and `docs/libsodchan-design.md` (workspace design doc).
 
 ## Status
 
-**v0.6 (PR-6 channels)** — Ready sessions carry named multiplexed channels with flow control. Host integration next.
+**v0.7 (PR-7 fuzz)** — libFuzzer harness, seed corpus, valgrind/ASan scripts. Host integration next (PR-8+).
+
+### Memory / fuzz checks
+
+```bash
+./scripts/run_asan_tests.sh          # ASan ctest
+./scripts/run_fuzz.sh 30             # 30s libFuzzer (clang)
+./scripts/run_valgrind.sh            # needs valgrind + libc6-dbg
+```
 
 ## License
 

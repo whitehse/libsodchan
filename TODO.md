@@ -10,10 +10,10 @@ Major progress tracking (ADR 013 lineage from siblings).
 - [x] PR-4: HELLO + server id_sig + KX + secretstream headers + MITM/dialectic
 - [x] PR-5: AUTH_DEVICE + auth_decide + AUTH_OK/FAIL → READY
 - [x] PR-6: Multiplexed channels + flow control
+- [x] PR-7: Fuzz harness + corpus + valgrind/ASan scripts
 
 ## In progress / next
 
-- [ ] PR-7: Fuzz + valgrind
 - [ ] PR-8+: edgehost / cpe_agent / mobile (see design PR plan)
 
 ## Open ops (not library)

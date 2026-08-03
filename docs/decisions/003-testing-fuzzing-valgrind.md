@@ -19,4 +19,13 @@ Sibling libraries require ctest, dialectic tests, optional libFuzzer harnesses, 
 
 ## Consequences
 
-- PR-1 ships smoke only; later PRs expand coverage without changing the contract.
+- **ctest** covers smoke, crypto, wire, dialectic, mitm, auth, channels, and
+  **fuzz corpus replay** (`fuzz_sodchan_standalone`).
+- **libFuzzer**: `scripts/run_fuzz.sh` builds `fuzz_sodchan` with clang and runs
+  a timed campaign over `fuzz/corpus/`.
+- **Valgrind**: `scripts/run_valgrind.sh` runs every test binary under memcheck
+  (requires `valgrind` + `libc6-dbg` on Debian/Ubuntu).
+- **ASan fallback**: `scripts/run_asan_tests.sh` when valgrind/debuginfo is
+  unavailable on the host.
+- Core parser/handshake/channel changes should not merge without ctest green and
+  either a clean valgrind run or ASan ctest + a short fuzz campaign.

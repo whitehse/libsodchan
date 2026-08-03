@@ -22,6 +22,12 @@ Thumbs.db
 
 /build/
 /build-*/
+build-fuzz/
+build-asan/
+crash-*
+*.log
+# libFuzzer may write new units into corpus during local campaigns
+fuzz/corpus/[0-9a-f]*
 
 # Extracted libsodium -dev prefix (local only; not committed)
 third_party/sodium-prefix/

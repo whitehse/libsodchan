@@ -5,6 +5,9 @@
 **Key commands** (run from repo root):
 - `cmake -B build -S . && cmake --build build` — configure and build static library + tests
 - `ctest --test-dir build --output-on-failure` — run verification tests
+- `./scripts/run_valgrind.sh` — memcheck all test binaries (needs valgrind + libc6-dbg)
+- `./scripts/run_fuzz.sh [seconds]` — libFuzzer campaign (needs clang)
+- `./scripts/run_asan_tests.sh` — ASan/UBSan rebuild + ctest
 
 **Documentation map**:
 - AGENTS.md (this file) — start here
@@ -24,21 +27,19 @@
 - Wire format ADR 017 + hex vectors **before** handshake merge (PR-3 before PR-4).
 
 **Definition of done**:
-- Builds clean; `ctest` green.
+- Builds clean; `ctest` green (includes corpus replay).
 - Docs accurate.
 - No new syscalls/callbacks.
-- Dialectic tests cover READY → channel data when implemented.
+- Parser/handshake/channel changes: short fuzz and valgrind or ASan clean.
 
-**Current status (v0.6 / PR-6 channels)**:
-- Full session: HELLO → KX → AUTH → READY → **named channels**.
-- `channel_open` / `accept` / `send` / `window_adjust` / `eof` / `close`.
-- Flow control: per-channel windows; `ERR_WINDOW` / `ERR_FULL`; allowlist filter.
-- Events: CHANNEL_OPEN/OPENED/OPEN_FAIL/DATA/WINDOW/EOF/CLOSE, PING.
-- Tests: smoke, crypto, wire, dialectic, mitm, auth, **channels**.
+**Current status (v0.7 / PR-7 fuzz+valgrind)**:
+- Full session through named channels (PR-1…6).
+- **Fuzz**: `fuzz/fuzz_sodchan.c` (server/client/dialectic inject) + `fuzz/corpus/`.
+- **Scripts**: `run_valgrind.sh`, `run_fuzz.sh`, `run_asan_tests.sh`.
+- Standalone corpus test in ctest (`sodchan_fuzz_corpus`).
 
 **Next PRs** (see design PR plan):
-- PR-7: fuzz + valgrind
-- PR-8+: edgehost / cpe_agent / mobile
+- PR-8+: edgehost device store, listen :4336/:4337, cpe_agent, mobile
 
 **Dependencies**:
 - **libsodium** (required). Install `libsodium-dev` or set `SODIUM_ROOT` / extract headers under `third_party/sodium-prefix/usr`.

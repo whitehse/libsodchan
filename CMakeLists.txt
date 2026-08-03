@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(libsodchan LANGUAGES C VERSION 0.6.0)
+project(libsodchan LANGUAGES C VERSION 0.7.0)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -95,13 +95,28 @@ target_link_libraries(sodchan_client_example PRIVATE sodchan)
 add_executable(sodchan_server_example examples/sodchan_server_example.c)
 target_link_libraries(sodchan_server_example PRIVATE sodchan)
 
-# Fuzz harness (optional — requires libFuzzer); body lands with PR-7.
-option(ENABLE_FUZZ "Build fuzz harness (requires libFuzzer)" OFF)
+# Fuzz harness (libFuzzer) — PR-7. Prefer clang:
+#   cmake -B build-fuzz -DENABLE_FUZZ=ON -DCMAKE_C_COMPILER=clang-19 ...
+option(ENABLE_FUZZ "Build libFuzzer harness fuzz_sodchan" OFF)
 if(ENABLE_FUZZ)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fuzz/fuzz_sodchan.c")
-        add_executable(fuzz_sodchan fuzz/fuzz_sodchan.c)
-        target_link_libraries(fuzz_sodchan PRIVATE sodchan)
-        target_compile_options(fuzz_sodchan PRIVATE -fsanitize=fuzzer,address -g -O1)
-        target_link_options(fuzz_sodchan PRIVATE -fsanitize=fuzzer,address)
-    endif()
+    add_executable(fuzz_sodchan fuzz/fuzz_sodchan.c)
+    target_link_libraries(fuzz_sodchan PRIVATE sodchan)
+    target_compile_options(fuzz_sodchan PRIVATE -fsanitize=fuzzer,address -g -O1)
+    target_link_options(fuzz_sodchan PRIVATE -fsanitize=fuzzer,address)
+endif()
+
+# Standalone corpus runner (no libFuzzer) — always useful for CI smoke.
+option(ENABLE_FUZZ_STANDALONE "Build fuzz_sodchan_standalone corpus replay" ON)
+if(ENABLE_FUZZ_STANDALONE)
+    add_executable(fuzz_sodchan_standalone fuzz/fuzz_sodchan.c)
+    target_link_libraries(fuzz_sodchan_standalone PRIVATE sodchan)
+    target_compile_definitions(fuzz_sodchan_standalone PRIVATE SODCHAN_FUZZ_STANDALONE=1)
+    add_test(NAME sodchan_fuzz_corpus COMMAND fuzz_sodchan_standalone
+        "${CMAKE_CURRENT_SOURCE_DIR}/fuzz/corpus/empty"
+        "${CMAKE_CURRENT_SOURCE_DIR}/fuzz/corpus/mode0"
+        "${CMAKE_CURRENT_SOURCE_DIR}/fuzz/corpus/mode1"
+        "${CMAKE_CURRENT_SOURCE_DIR}/fuzz/corpus/mode2"
+        "${CMAKE_CURRENT_SOURCE_DIR}/fuzz/corpus/hello_frame"
+        "${CMAKE_CURRENT_SOURCE_DIR}/fuzz/corpus/garbage"
+        "${CMAKE_CURRENT_SOURCE_DIR}/fuzz/corpus/big_len")
 endif()
