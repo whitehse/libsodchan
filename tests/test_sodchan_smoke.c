@@ -161,29 +161,29 @@ static void test_null_cfg_and_destroy(void)
     printf("  PASS: null cfg/destroy safety\n");
 }
 
-static void test_keygen_stub(void)
+static void test_keygen_smoke(void)
 {
     uint8_t pk[SODCHAN_PUBKEY_BYTES];
     uint8_t sk[SODCHAN_SECKEY_BYTES];
     char fp[SODCHAN_FP_SHA256_MAX];
 
-    assert(sodchan_keygen_device(pk, sk) == SODCHAN_ERR_STATE);
-    assert(sodchan_keygen_from_seed(pk, pk, sk) == SODCHAN_ERR_STATE);
+    assert(sodchan_keygen_device(pk, sk) == SODCHAN_OK);
     assert(sodchan_pubkey_fingerprint_sha256(pk, fp, sizeof(fp)) ==
-           SODCHAN_ERR_STATE);
-    printf("  PASS: keygen stubs return ERR_STATE (PR-2)\n");
+           SODCHAN_OK);
+    assert(strncmp(fp, "SHA256:", 7) == 0);
+    printf("  PASS: keygen + fingerprint smoke\n");
 }
 
 int main(void)
 {
-    printf("libsodchan smoke test (PR-1 scaffold)...\n");
+    printf("libsodchan smoke test...\n");
     test_server_create_destroy();
     test_server_requires_keys();
     test_client_fail_closed_pin();
     test_client_accept_any();
     test_lab_mode_gate();
     test_null_cfg_and_destroy();
-    test_keygen_stub();
+    test_keygen_smoke();
     printf("libsodchan smoke test PASSED.\n");
     return 0;
 }

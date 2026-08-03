@@ -6,8 +6,14 @@ Resembles SSH (session, named channels, flow control) without OpenSSH wire compa
 
 ## Build
 
+Requires **libsodium** (headers + library). On Debian/Ubuntu: `libsodium-dev`.
+
 ```bash
+# Optional if system headers missing: extract -dev package to third_party/
+#   apt-get download libsodium-dev && dpkg-deb -x libsodium-dev_*.deb third_party/sodium-prefix
+
 cmake -B build -S .
+# or: cmake -B build -S . -DSODIUM_ROOT=/path/to/prefix
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
@@ -31,7 +37,7 @@ See `AGENTS.md` and `docs/libsodchan-design.md` (workspace design doc).
 
 ## Status
 
-**v0.1 (PR-1 scaffold)** — API surface, create/destroy policy, smoke test. Crypto and wire protocol follow in PR-2+.
+**v0.2 (PR-2 crypto)** — API surface, create/destroy policy, Ed25519 keygen, SCSK seed blobs, SHA256 fingerprints, ADR 014 suite. Wire/handshake in PR-3+.
 
 ## License
 

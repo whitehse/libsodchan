@@ -142,6 +142,11 @@ sodchan_ctx_t *sodchan_create(sodchan_role_t role, const sodchan_config_t *cfg)
         }
     }
 
+    /* Fail early if libsodium cannot initialize (PR-2+). */
+    if (sodchan_crypto_init() != SODCHAN_OK) {
+        return NULL;
+    }
+
     ctx = (sodchan_ctx_t *)calloc(1, sizeof(*ctx));
     if (!ctx) {
         return NULL;
@@ -351,30 +356,4 @@ int sodchan_disconnect(sodchan_ctx_t *ctx, int reason, const char *msg)
     return SODCHAN_OK;
 }
 
-/* PR-2 implements real sodium keygen. */
-int sodchan_keygen_device(uint8_t pk[SODCHAN_PUBKEY_BYTES],
-                          uint8_t sk[SODCHAN_SECKEY_BYTES])
-{
-    (void)pk;
-    (void)sk;
-    return SODCHAN_ERR_STATE;
-}
-
-int sodchan_keygen_from_seed(const uint8_t seed[32],
-                             uint8_t pk[SODCHAN_PUBKEY_BYTES],
-                             uint8_t sk[SODCHAN_SECKEY_BYTES])
-{
-    (void)seed;
-    (void)pk;
-    (void)sk;
-    return SODCHAN_ERR_STATE;
-}
-
-int sodchan_pubkey_fingerprint_sha256(const uint8_t pk[SODCHAN_PUBKEY_BYTES],
-                                      char *out, size_t out_len)
-{
-    (void)pk;
-    (void)out;
-    (void)out_len;
-    return SODCHAN_ERR_STATE;
-}
+/* Key helpers implemented in sodchan_crypto.c */

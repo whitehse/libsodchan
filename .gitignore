@@ -22,3 +22,7 @@ Thumbs.db
 
 /build/
 /build-*/
+
+# Extracted libsodium -dev prefix (local only; not committed)
+third_party/sodium-prefix/
+*.deb

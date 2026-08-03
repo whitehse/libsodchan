@@ -18,5 +18,6 @@
 | 004 | Dialectic client/server testing |
 | 006 | Core library as plumbing |
 | 009 | Consistent protocol interfaces |
+| 014 | Fixed libsodium crypto suite |
 
-Sodchan-specific ADRs (014–017) land with later PRs (crypto suite, channels, identity, wire format).
+Sodchan-specific ADRs 015–017 land with later PRs (channels, identity, wire format).

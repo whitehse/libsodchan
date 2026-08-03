@@ -68,4 +68,16 @@ struct sodchan_ctx {
 
 void sodchan_i_set_error(sodchan_ctx_t *ctx, int code, const char *fmt, ...);
 
+/** Ensure sodium_init(); SODCHAN_OK or SODCHAN_ERR_CRYPTO. */
+int sodchan_crypto_init(void);
+
+/**
+ * Labeled session key for secretstream (ADR 014 / design §4.3.1).
+ * ss_key = BLAKE2b-32(kx_direction_key || dom)
+ * Domains: SODCHAN_DOM_SS_C2S / SODCHAN_DOM_SS_S2C (sodchan.h).
+ */
+int sodchan_crypto_ss_key_derive(const uint8_t kx_key[32],
+                                 const char *dom,
+                                 uint8_t out_key[32]);
+
 #endif /* SODCHAN_INTERNAL_H */

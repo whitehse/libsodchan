@@ -26,18 +26,26 @@ extern "C" {
 #endif
 
 #define SODCHAN_VERSION_MAJOR 0
-#define SODCHAN_VERSION_MINOR 1
+#define SODCHAN_VERSION_MINOR 2
 #define SODCHAN_VERSION_PATCH 0
 
 #define SODCHAN_MAX_CHANNELS       16
 #define SODCHAN_PUBKEY_BYTES       32
 #define SODCHAN_SECKEY_BYTES       64
+#define SODCHAN_SEED_BYTES         32
+/** On-disk seed blob: magic "SCSK\\x01" (5 bytes) + 32-byte seed. */
+#define SODCHAN_SEED_BLOB_LEN      37
 #define SODCHAN_CHANNEL_NAME_MAX   63
 #define SODCHAN_DATA_MAX           (64 * 1024)
 #define SODCHAN_ERROR_MAX          256
 #define SODCHAN_USER_MAX           128
 #define SODCHAN_DEVICE_ID_MAX      128
+/** "SHA256:" + unpadded base64(SHA-256(pk)) + NUL — plenty of room. */
 #define SODCHAN_FP_SHA256_MAX      96
+
+/* Domain separation for session KDF (ADR 014; used from PR-4 handshake). */
+#define SODCHAN_DOM_SS_C2S         "sodchan-ss-c2s-v1"
+#define SODCHAN_DOM_SS_S2C         "sodchan-ss-s2c-v1"
 
 /* CPE / product channel names (match libchssh subsystem strings). */
 #define SODCHAN_CHANNEL_EDGE_TELEMETRY "edge-telemetry"
@@ -230,12 +238,41 @@ int sodchan_channel_window_adjust(sodchan_ctx_t *ctx, uint32_t local_id,
 
 int sodchan_disconnect(sodchan_ctx_t *ctx, int reason, const char *msg);
 
-/* Key helpers (implemented in PR-2; stubs return SODCHAN_ERR_STATE until then). */
+/**
+ * Generate a random Ed25519 device/server identity keypair.
+ * sk is 64-byte libsodium format (seed||pk layout as crypto_sign defines).
+ */
 int sodchan_keygen_device(uint8_t pk[SODCHAN_PUBKEY_BYTES],
                           uint8_t sk[SODCHAN_SECKEY_BYTES]);
-int sodchan_keygen_from_seed(const uint8_t seed[32],
+
+/** Deterministic keypair from 32-byte seed (crypto_sign_seed_keypair). */
+int sodchan_keygen_from_seed(const uint8_t seed[SODCHAN_SEED_BYTES],
                              uint8_t pk[SODCHAN_PUBKEY_BYTES],
                              uint8_t sk[SODCHAN_SECKEY_BYTES]);
+
+/**
+ * Pack seed as SCSK\\x01 || seed (37 bytes). Bare 32-byte seed files are
+ * rejected by decode to avoid mixed formats (design §4.3.3).
+ */
+int sodchan_seed_encode(const uint8_t seed[SODCHAN_SEED_BYTES],
+                        uint8_t out[SODCHAN_SEED_BLOB_LEN]);
+
+/**
+ * Unpack SCSK\\x01 blob. Returns SODCHAN_ERR_PARAM if len/magic wrong
+ * (including bare 32-byte buffers).
+ */
+int sodchan_seed_decode(const uint8_t *blob, size_t len,
+                        uint8_t seed[SODCHAN_SEED_BYTES]);
+
+/** Decode SCSK blob then keygen_from_seed. */
+int sodchan_keygen_from_seed_blob(const uint8_t *blob, size_t len,
+                                  uint8_t pk[SODCHAN_PUBKEY_BYTES],
+                                  uint8_t sk[SODCHAN_SECKEY_BYTES]);
+
+/**
+ * OpenSSH-style fingerprint: "SHA256:" + unpadded base64 of SHA-256(pk).
+ * out_len must be >= SODCHAN_FP_SHA256_MAX (or at least need+1).
+ */
 int sodchan_pubkey_fingerprint_sha256(const uint8_t pk[SODCHAN_PUBKEY_BYTES],
                                       char *out, size_t out_len);
 

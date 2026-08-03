@@ -10,9 +10,10 @@ libsodchan is a **plumbing-only** protocol library: byte buffers and events in, 
 |------|------|
 | `include/sodchan.h` | Public API |
 | `src/sodchan.c` | State machine, channels, I/O buffers |
-| `src/sodchan_crypto.c` | Sodium helpers (PR-2+) |
+| `src/sodchan_crypto.c` | Sodium keygen, SCSK, fingerprints, SS KDF |
 | `src/sodchan_wire.c` | PDU encode/decode (PR-3+) |
 | `src/sodchan_internal.h` | Private context |
+| `cmake/FindSodium.cmake` | Locate libsodium |
 
 ## Invariants
 
