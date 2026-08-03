@@ -56,18 +56,25 @@ static void test_server_create_destroy(void)
 
     s = sodchan_create(SODCHAN_ROLE_SERVER, &cfg);
     assert(s != NULL);
-    assert(sodchan_current_state(s) == SODCHAN_STATE_IDLE);
+    /* PR-4: create starts HELLO (server waits for peer). */
+    assert(sodchan_current_state(s) == SODCHAN_STATE_HELLO);
 
     assert(sodchan_get_output(s, out, sizeof(out)) == 0);
     assert(sodchan_next_event(s, &ev) == 0);
-    assert(sodchan_feed_input(s, out, 4) == 0);
+    /* Length prefix L=140 without body → buffered, still HELLO. */
+    out[0] = 0;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 140;
+    assert(sodchan_feed_input(s, out, 4) == 4);
+    assert(sodchan_current_state(s) == SODCHAN_STATE_HELLO);
 
     assert(sodchan_channel_open(s, SODCHAN_CHANNEL_EDGE_TELEMETRY, NULL) ==
            SODCHAN_ERR_STATE);
     assert(sodchan_auth_decide(s, 1) == SODCHAN_ERR_STATE);
 
     sodchan_reset(s);
-    assert(sodchan_current_state(s) == SODCHAN_STATE_IDLE);
+    assert(sodchan_current_state(s) == SODCHAN_STATE_HELLO);
 
     assert(sodchan_disconnect(s, 0, "bye") == SODCHAN_OK);
     assert(sodchan_current_state(s) == SODCHAN_STATE_CLOSED);
@@ -109,7 +116,12 @@ static void test_client_fail_closed_pin(void)
     cfg.server_id_pk = k_server_pk;
     c = sodchan_create(SODCHAN_ROLE_CLIENT, &cfg);
     assert(c != NULL);
-    assert(sodchan_current_state(c) == SODCHAN_STATE_IDLE);
+    assert(sodchan_current_state(c) == SODCHAN_STATE_HELLO);
+    /* Client queues local HELLO immediately */
+    {
+        uint8_t out[256];
+        assert(sodchan_get_output(c, out, sizeof(out)) > 0);
+    }
     sodchan_destroy(c);
     printf("  PASS: client fail-closed pin\n");
 }

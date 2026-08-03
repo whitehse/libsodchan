@@ -29,18 +29,18 @@
 - No new syscalls/callbacks.
 - Dialectic tests cover READY → channel data when implemented.
 
-**Current status (v0.3 / PR-3 wire)**:
+**Current status (v0.4 / PR-4 handshake)**:
 - Public API in `include/sodchan.h` (design-aligned).
-- `sodchan_create` / `destroy` / `reset` with pin + lab_mode gates; `sodium_init` on create.
-- **libsodium** linked: keygen, SCSK seeds, SHA256 fingerprints, labeled SS KDF.
-- **Wire (ADR 017):** `sodchan_wire_*` encode/decode for HELLO, AUTH, mux, transcripts;
-  golden vectors in `tests/vectors/handshake_v1.hex`.
-- Plumbing stubs: feed/get/next_event/channel/auth return empty or `SODCHAN_ERR_STATE` until PR-4.
-- Tests: smoke + crypto + wire.
+- `sodchan_create` starts HELLO; client queues HELLO, server waits.
+- **K16:** server Ed25519-signs `T_hello` (both ephemerals); client pin-checks then verifies before KX.
+- **crypto_kx** + labeled secretstream keys; SS header exchange → `SODCHAN_STATE_AUTH`.
+- Events: `HELLO_RECEIVED`, `KX_COMPLETE` (AUTH PDUs in PR-5).
+- Wire ADR 017 + golden vectors; crypto helpers PR-2.
+- Tests: smoke, crypto, wire, **dialectic**, **mitm_pin**.
 
 **Next PRs** (see design PR plan):
-- PR-4: HELLO + mandatory server sig + KX + secretstream (+ MITM test)
-- PR-5+: AUTH, channels, host/agent/mobile
+- PR-5: AUTH_DEVICE + auth_decide + AUTH_OK/FAIL
+- PR-6+: channels, host/agent/mobile
 
 **Dependencies**:
 - **libsodium** (required). Install `libsodium-dev` or set `SODIUM_ROOT` / extract headers under `third_party/sodium-prefix/usr`.

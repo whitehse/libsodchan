@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(libsodchan LANGUAGES C VERSION 0.3.0)
+project(libsodchan LANGUAGES C VERSION 0.4.0)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -70,6 +70,16 @@ target_include_directories(sodchan_wire_test PRIVATE
 # Run from build dir; pass absolute path to golden vectors.
 add_test(NAME sodchan_wire COMMAND sodchan_wire_test
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/handshake_v1.hex")
+
+add_executable(sodchan_dialectic_test tests/test_sodchan_dialectic.c)
+target_link_libraries(sodchan_dialectic_test PRIVATE sodchan)
+add_test(NAME sodchan_dialectic COMMAND sodchan_dialectic_test)
+
+add_executable(sodchan_mitm_pin_test tests/test_sodchan_mitm_pin.c)
+target_link_libraries(sodchan_mitm_pin_test PRIVATE sodchan)
+target_include_directories(sodchan_mitm_pin_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_test(NAME sodchan_mitm_pin COMMAND sodchan_mitm_pin_test)
 
 add_executable(sodchan_client_example examples/sodchan_client_example.c)
 target_link_libraries(sodchan_client_example PRIVATE sodchan)

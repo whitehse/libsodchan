@@ -35,14 +35,14 @@ libsodchan is a **plumbing-only** protocol library: byte buffers and events in, 
 | **4337** | TLS → sodchan plaintext | mobile |
 | 443 | HTTPS enroll + assets | mobile / SPA |
 
-## State machine (target)
+## State machine
 
 ```
-IDLE → HELLO → SS_HEADER → AUTH → READY → DRAINING → CLOSED
-                                              ↘ ERROR
+create → HELLO → SS_HEADER → AUTH → READY → DRAINING → CLOSED
+                                      ↘ ERROR
 ```
 
-PR-1 leaves contexts in `IDLE` until handshake code lands.
+PR-4 implements through `AUTH` (encrypted channel ready; AUTH PDUs in PR-5).
 
 ## Sibling relationship
 

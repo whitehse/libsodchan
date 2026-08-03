@@ -37,7 +37,7 @@ See `AGENTS.md` and `docs/libsodchan-design.md` (workspace design doc).
 
 ## Status
 
-**v0.3 (PR-3 wire)** — Crypto helpers + normative wire encode/decode (ADR 017) with golden hex vectors. Handshake state machine in PR-4+.
+**v0.4 (PR-4 handshake)** — HELLO + mandatory server identity proof + X25519 KX + secretstream headers through `AUTH` state. Device auth PDUs in PR-5+.
 
 ## License
 
